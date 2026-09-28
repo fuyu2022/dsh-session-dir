@@ -1,13 +1,35 @@
 // Headless verification of dsh-session-dir's Host half.
 //
-// Boots src/index.js against fake registry/query/fs services, then drives the
-// real /vdirs route handler with wire-format requests and asserts the durable
-// tree, its blank/archived pruning and the paging payloads.
+// Boots src/index.js against fake registry/query services, then drives the real
+// /vdirs route handler with wire-format requests and asserts the durable tree,
+// its blank/archived pruning, the paging payloads, and where the tree is stored:
+// one central file per workspace under <DSH_HOME>/dsh-session-dir, with a flat
+// index beside it, and a 1.x `.dsh-vdirs.json` still usable as the import path.
 // Scratch tooling: not part of the published package.
-const files = new Map()
-const KEY = 'D:/proj/.dsh-vdirs.json'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 
-const ws = { id: 'w1', title: 'proj', path: 'D:/proj', sessionIds: ['s-old', 's-blank', 's-arch'] }
+// The store resolves $DSH_HOME lazily per instance, but pin it before the first
+// request anyway so every assertion knows the exact root. The harness home and
+// the workspace are siblings on purpose: nesting the store inside the workspace
+// would make the "workspace root is untouched" assertion vacuous.
+const BASE = await mkdtemp(path.join(tmpdir(), 'dsh-vdirs-'))
+const HOME = path.join(BASE, 'home')
+process.env.DSH_HOME = HOME
+const STORE = path.join(HOME, 'dsh-session-dir')
+await mkdir(HOME, { recursive: true })
+
+const WS_PATH = path.join(BASE, 'proj')
+const LEGACY = path.join(WS_PATH, '.dsh-vdirs.json')
+const legacyText = JSON.stringify({
+  dirs: [{ id: 'd1', name: '设计', parentId: null, createdAt: 1 }],
+  members: { d1: ['s-old', 's-blank', 's-arch', 's-gone'] }
+})
+await mkdir(WS_PATH, { recursive: true })
+await writeFile(LEGACY, legacyText, 'utf8')
+
+const ws = { id: 'w1', title: 'proj', path: WS_PATH, sessionIds: ['s-old', 's-blank', 's-arch'] }
 const registry = {
   list: () => [ws],
   get: (id) => (id === 'w1' ? ws : undefined),
@@ -20,41 +42,39 @@ const query = {
   },
   async listEvents() { return [{ time: 500 }] },
   async readTitleSnapshots(ids) {
-    return ids.map(id => ({ sessionId: id, status: 'fulfilled', value: { title: { title: 'T-' + id, updatedAt: 1 } } }))
+    return ids.map(sessionId => ({ sessionId, status: 'fulfilled', value: { title: { title: 'T-' + sessionId, updatedAt: 1 } } }))
   }
 }
 
 let handler = null
 let admission = {}
+// A live Host would serve `fs`, and 1.x persisted through it. Counting its writes
+// proves the central store replaced that path instead of sitting beside it.
+const fsWrites = []
+const services = {
+  connection: { admit: () => admission },
+  fs: {
+    async resolve(p) { return p },
+    async readText() { throw new Error('ENOENT') },
+    async writeText(target, text) { fsWrites.push(target) }
+  },
+  // The official Host list: `blank` is the flag the shipped browser filters on,
+  // and the only thing this plugin may use to hide provisional rows.
+  sessionController: {
+    async list() {
+      return {
+        items: [
+          { sessionId: 's-old', updatedAt: 300, blank: false },
+          { sessionId: 's-blank', updatedAt: 200, blank: true }
+        ]
+      }
+    }
+  }
+}
 const ctx = {
   workspaceRegistry: registry,
   sessionQuery: query,
-  get(name) {
-    if (name === 'fs') {
-      return {
-        async resolve(path) { return path },
-        async readText(target) {
-          if (!files.has(target)) throw new Error('ENOENT: ' + target)
-          return files.get(target)
-        },
-        async writeText(target, text) { files.set(target, text) }
-      }
-    }
-    if (name === 'connection') return { admit: () => admission }
-    // The official Host list: `blank` is the flag the shipped browser filters on,
-    // and the only thing this plugin may use to hide provisional rows.
-    if (name === 'sessionController') {
-      return {
-        list: async () => ({
-          items: [
-            { sessionId: 's-old', updatedAt: 300, blank: false },
-            { sessionId: 's-blank', updatedAt: 200, blank: true }
-          ]
-        })
-      }
-    }
-    return undefined
-  },
+  get(name) { return services[name] },
   on() { return () => {} },
   inject(names, cb) {
     cb({
@@ -90,6 +110,20 @@ function request(endpoint, payload) {
   })
 }
 
+async function readJson(target, attempts = 40) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return JSON.parse(await readFile(target, 'utf8'))
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e
+      await new Promise(r => setTimeout(r, 25))
+    }
+  }
+  return null
+}
+
+const exists = (target) => stat(target).then(() => true, () => false)
+
 const main = async () => {
   const mod = await import('../src/index.js')
   check('host declares its inject set',
@@ -106,20 +140,44 @@ const main = async () => {
   const unknown = await request('vdirs-nope', {})
   check('unknown endpoints report not-found', unknown.result && unknown.result.ok === false && unknown.result.error.code === 'not-found', unknown.result)
 
-  // ---- legacy file convergence -------------------------------------------
-  files.set(KEY, JSON.stringify({
-    dirs: [{ id: 'd1', name: '设计', parentId: null, createdAt: 1 }],
-    members: { d1: ['s-old', 's-blank', 's-arch', 's-gone'] }
-  }))
+  // ---- 1.x workspace file: read, import, never rewritten ------------------
   const tree = await request('vdirs-tree', { workspaceId: 'w1' })
   check('tree returns the directory, pruned to showable sessions',
     tree.result.ok && tree.result.value.total === 1 && tree.result.value.dirs[0].count === 1,
     tree.result.value)
   check('blank/archived/unknown members are reported as a single root count',
     tree.result.value.rootCount === 0, tree.result.value)
-  const persisted = JSON.parse(files.get(KEY))
+  check('the legacy workspace file is left exactly as it was',
+    await readFile(LEGACY, 'utf8') === legacyText)
+
+  const info = await request('vdirs-store-info', { workspaceId: 'w1' })
+  const stored = info.result.value
+  check('the tree is reported as living in the central store',
+    stored && stored.configured === true && typeof stored.path === 'string' && stored.path.startsWith(path.join(STORE, 'config')),
+    stored)
+  check('the central store is pinned to <DSH_HOME>/dsh-session-dir',
+    stored.root === STORE && stored.index === path.join(STORE, 'index.json'), stored)
+  check('the imported tree answers with a write timestamp', Number.isFinite(stored.savedAt), stored)
+
+  const persisted = await readJson(stored.path)
   check('legacy blank and archived members are dropped from the durable file',
-    persisted.members.d1.join(',') === 's-old', persisted.members)
+    persisted && persisted.members.d1.join(',') === 's-old', persisted && persisted.members)
+  check('the durable file records the workspace it belongs to',
+    persisted && persisted.format === 1 && persisted.workspace.path === WS_PATH && persisted.workspace.title === 'proj', persisted && persisted.workspace)
+  check('the file name carries a readable workspace stem',
+    path.basename(stored.path).startsWith('proj-') && stored.path.endsWith('.json'), path.basename(stored.path))
+
+  // The index is keyed by normalized path: separators unified, case folded on
+  // Windows — the same identity rule the store uses.
+  const normalizedPath = WS_PATH.replace(/\\/g, '/').toLowerCase()
+  const index = await readJson(path.join(STORE, 'index.json'))
+  const entry = index && index.workspaces && index.workspaces[normalizedPath]
+  check('index.json maps the normalized workspace path to its file',
+    entry && entry.file === path.basename(stored.path) && entry.path === WS_PATH,
+    { entry, keys: index && index.workspaces && Object.keys(index.workspaces) })
+  const configDir = await readdir(path.join(STORE, 'config'))
+  check('no temporary write files are left behind',
+    configDir.every(n => !n.endsWith('.tmp')), configDir)
 
   // ---- paging ------------------------------------------------------------
   const page = await request('vdirs-sessions', { workspaceId: 'w1', dirId: 'd1', offset: 0, limit: 50 })
@@ -136,6 +194,17 @@ const main = async () => {
   const recentPage = await request('vdirs-sessions', { workspaceId: 'w1', dirId: 'recent', offset: 0, limit: 50 })
   check('the removed recent group degrades to an ordinary empty directory',
     recentPage.result.ok && recentPage.result.value.total === 0, recentPage.result.value)
+
+  // ---- a missing optional service degrades, it does not hide sessions ------
+  // Dropping `sessionController` mid-run does not change the cached list, and the
+  // plugin may not prove a row is blank without it. What must hold either way is
+  // that the request still answers with the sessions it can prove.
+  const controller = services.sessionController
+  services.sessionController = undefined
+  const degraded = await request('vdirs-sessions', { workspaceId: 'w1', dirId: 'd1', offset: 0, limit: 50 })
+  check('without sessionController the listing degrades but still answers',
+    degraded.result.ok && degraded.result.value.items.some(i => i.sessionId === 's-old'), degraded.result.value)
+  services.sessionController = controller
 
   // ---- move + commit -----------------------------------------------------
   const moved = await request('vdirs-move-session', { workspaceId: 'w1', sessionId: 's-old', dirId: 'd1' })
@@ -155,12 +224,35 @@ const main = async () => {
   check('unknown targets are rejected', bad.result.value.error === 'dir-not-found', bad.result.value)
   const noWs = await request('vdirs-tree', { workspaceId: 'zzz' })
   check('unknown workspaces are rejected', noWs.result.value.error === 'workspace-not-found', noWs.result.value)
+
+  // ---- writes land in the central store ----------------------------------
+  const afterCrud = await readJson(stored.path, 80)
+  check('every mutation rewrites the central file',
+    afterCrud && afterCrud.dirs.length === 2 && afterCrud.dirs.some(d => d.name === '设计稿'), afterCrud && afterCrud.dirs)
+
+  const dump = await request('vdirs-export', { workspaceId: 'w1' })
+  check('export dumps the durable tree without touching the store',
+    dump.result.ok && dump.result.value.dirs.length === 2 && dump.result.value.workspace.path === WS_PATH, dump.result.value)
+
   const gone = await request('vdirs-delete-dir', { workspaceId: 'w1', dirId: 'd1' })
   check('delete-dir removes it and reparents members', gone.result.value.dirs.length === 1 && gone.result.value.rootCount === 1, gone.result.value)
 
+  // ---- reload: the store, not the workspace file, is the source of truth ---
+  handler = null
+  ctx.workspaceRegistry.archivedSessionIds = []
+  mod.apply(ctx)
+  const reloaded = await request('vdirs-tree', { workspaceId: 'w1' })
+  check('a reload reads the central store instead of re-importing the 1.x file',
+    reloaded.result.ok && reloaded.result.value.dirs.length === 1 && reloaded.result.value.dirs[0].name === '子目录',
+    reloaded.result.value)
+  const noWorkspaceFile = LEGACY
+  check('the workspace root is never written back',
+    await readFile(noWorkspaceFile, 'utf8') === legacyText && await exists(path.join(WS_PATH, '.dsh-vdirs.json.tmp')) === false)
+  check('persistence never goes through the workspace file service', fsWrites.length === 0, fsWrites)
+
+  await rm(HOME, { recursive: true, force: true }).catch(() => {})
   console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed')
   process.exit(failures ? 1 : 0)
 }
 
 main().catch(err => { console.error(err); process.exit(1) })
-

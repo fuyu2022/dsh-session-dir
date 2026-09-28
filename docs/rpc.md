@@ -12,6 +12,10 @@ Client 走 `ctx.connection.rpc.call`，路由挂在 Connection 通道 `/vdirs` �
 | `vdirs-move-session` | `{workspaceId,sessionId,dirId?}` | 移动会话，`dirId=null` 回根；空白会话首次对话后也走这里落库 |
 | `vdirs-reorder-dir` | `{workspaceId,dirId,targetId?,place}` | 同级排序 |
 | `vdirs-sessions` | `{workspaceId,dirId?,offset,limit}` | 分页会话列表；`dirId` 缺省为根，每行 `{sessionId,title,createdAt,lastActiveAt}` |
+| `vdirs-store-info` | `{workspaceId}` | 诊断：`{root,index,configured,path,savedAt,storePath,dirCount}` —— 这份目录树究竟存在哪个绝对路径、何时写的 |
+| `vdirs-export` | `{workspaceId}` | 只读导出：`{exportedAt,workspace,path,format,dirs,members}`，供手工备份或报障 |
+
+`vdirs-store-info` / `vdirs-export` 是只读端点，client 目前不调用（也不解析），可随时用 `curl`-类工具直接打 `/vdirs/store-info` 排查「目录树去哪了」。存储布局见 [architecture.md](architecture.md#存储模型)。
 
 会话重命名不走 Host：client 直接用官方 `sessions.using(id, {source:'controllerOperation'}, ref => ref.binding.session.rename(title))`。运行中 / 空白等实时状态也取自 client 自己的 `sessions.list` 快照，Host 只负责目录归属、排序、分页与时间戳。
 
@@ -36,7 +40,7 @@ POST /vdirs/<endpoint>
 
 ## 依赖注入
 
-- **Host**：`workspaceRegistry`、`sessionQuery`、`connection`、`webServer`；可选 `fs`（持久化）、`sessionController`（官方列表 —— 同时提供 updatedAt 与空白会话判定，30s 缓存）。
+- **Host**：`workspaceRegistry`、`sessionQuery`、`connection`、`webServer`；可选 `sessionController`（官方列表 —— 同时提供 updatedAt 与空白会话判定，30s 缓存）。持久化走 Node `fs` 直写中央存储，**不再经过 `ctx.fs`**，因此工作区文件系统形态不再影响目录树的存取。
 - **Client**：`slots`、`uiWorkspace`、`workspaces`；可选 `sessions`（空白/运行状态与重命名）、`connection`（RPC）、`timer`。
 
 Client 不依赖动态沙箱全局（无 `harness` / `styles` / `host`），也不 import 任何 Harness Client UI 包（官方图标按 16×16 artwork 内联），只在 factory 内经 `require('react')` 取 React。

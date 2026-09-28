@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-dir",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "DSH 虚拟目录会话管理器：把侧边栏会话列表替换成 VSCode 资源管理器式的目录树，支持拖拽移动/排序、会话重命名与归档，并让新建会话遵循官方「单个空白会话」语义。",
   "type": "module",
   "main": "src/index.js",
@@ -16,7 +16,7 @@
     "docs"
   ],
   "scripts": {
-    "verify": "node scripts/verify-host.mjs && node scripts/verify-claim.mjs"
+    "verify": "node scripts/verify-host.mjs && node scripts/verify-store.mjs && node scripts/verify-claim.mjs"
   },
   "dsh": {
     "bundle": {

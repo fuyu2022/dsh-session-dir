@@ -1,8 +1,20 @@
 // dsh-session-dir — Host half of the virtual-directory session manager.
 //
-// Owns one workspace's durable directory tree (`.dsh-vdirs.json`) and serves it
-// to the browser half over a dedicated `/vdirs` Connection-RPC route whose
-// endpoints are the `vdirs-*` method names.
+// Owns one workspace's durable directory tree and serves it to the browser half
+// over a dedicated `/vdirs` Connection-RPC route whose endpoints are the
+// `vdirs-*` method names.
+//
+// The tree lives in a CENTRAL store, not in the workspace: a plugin update or a
+// remove/reinstall wipes `$DSH_HOME/profiles/<profile>/node_modules`, so nothing
+// durable may live there. One file per workspace sits at
+// `<DSH_HOME>/dsh-session-dir/config/<slug>-<hash>.json`, and a flat `index.json`
+// beside it maps a normalized workspace path to its file, so a workspace renamed
+// or moved away is still recognizable by hand. `$DSH_HOME` follows the official
+// order: `DSH_HOME`, then `~/.dsh`.
+//
+// A `.dsh-vdirs.json` left in a workspace root by 1.x is still read when the
+// central file is absent — that is the upgrade path, not a second store. It is
+// never written again and never deleted, so downgrading stays possible.
 //
 // Blank sessions are deliberately absent from the durable tree and from every
 // listing: a blank row is provisional, and only the browser half draws the single
@@ -10,13 +22,232 @@
 // `blank` flag — the same value the shipped sidebar filters on, so an unfocused
 // New Session row can never reappear under the root. That also converges a legacy
 // file which still names one on the first read.
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import path from 'node:path'
+
 export const inject = ['workspaceRegistry', 'sessionQuery', 'connection', 'webServer']
+
+// The one directory this plugin owns under the harness home. Named after the
+// package so a `$DSH_HOME` listing explains itself.
+const STORE_DIR = 'dsh-session-dir'
+// Bumped when the on-disk shape changes incompatibly; a file carrying another
+// value is left untouched rather than silently rewritten.
+const STORE_FORMAT = 1
+// The 1.x per-workspace file, now read-only.
+const LEGACY_FILE = '.dsh-vdirs.json'
+
+// Central store root. `DSH_HOME` wins over `~/.dsh`, and a blank value counts as
+// unset — the same precedence the shipped home-paths helper documents. A relative
+// `DSH_HOME` is resolved against the process cwd instead of being inherited as-is,
+// so the store cannot silently move with the invoking directory.
+function storeRoot() {
+  const configured = String(process.env.DSH_HOME || '').trim()
+  return path.resolve(configured || path.join(homedir(), '.dsh'), STORE_DIR)
+}
+
+// Path identity: separators normalized and, on Windows, case-folded, because the
+// same directory can arrive as `D:\a\b` or `d:/a/b`. Display keeps the raw path.
+function normalizePath(value) {
+  const text = String(value == null ? '' : value).trim().replace(/\\/g, '/')
+  return process.platform === 'win32' ? text.toLowerCase() : text
+}
+
+function hash8(value) {
+  return createHash('sha256').update(value).digest('hex').slice(0, 8)
+}
+
+function slugOf(value) {
+  const slug = String(value == null ? '' : value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24)
+    .replace(/-+$/, '')
+  return slug || 'workspace'
+}
+
+const normalized = (ws) => normalizePath(ws && ws.path)
+
+// A readable stem plus a digest of the normalized path: the stem answers "which
+// workspace is this file?" in a directory listing, the digest keeps two
+// same-named workspaces apart.
+function fileNameFor(ws) {
+  const key = normalized(ws)
+  return `${slugOf(ws.title || path.basename(key))}-${hash8(key)}.json`
+}
+
+const indexFile = (root) => path.join(root, 'index.json')
+const configFile = (root, fileName) => path.join(root, 'config', fileName)
+
+// Writes land in a sibling temp file and are renamed into place, so a crash or a
+// concurrent reader never observes a half-written config. Rename replaces the
+// destination on both POSIX and Windows.
+async function atomicWrite(target, text) {
+  await mkdir(path.dirname(target), { recursive: true })
+  const temp = path.join(path.dirname(target), `.${path.basename(target)}.${randomUUID()}.tmp`)
+  try {
+    await writeFile(temp, text, 'utf8')
+    await rename(temp, target)
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => {})
+    throw error
+  }
+}
+
+async function readJson(target) {
+  try {
+    return { text: await readFile(target, 'utf8') }
+  } catch (error) {
+    return { error }
+  }
+}
+
+// The central store. Every mutation of one workspace goes through `queue`, so two
+// drags arriving together cannot land out of order and lose the first.
+function createStore(onError) {
+  const root = storeRoot()
+  const queues = new Map()
+  const fail = (message, error) => {
+    if (typeof onError === 'function') onError(message, error)
+  }
+
+  async function readIndex() {
+    const { text, error } = await readJson(indexFile(root))
+    if (error) return {}
+    try {
+      const data = JSON.parse(text)
+      return data && typeof data.workspaces === 'object' && data.workspaces ? data.workspaces : {}
+    } catch (parseError) {
+      // Never overwrite an unreadable index: it may be the only pointer to files
+      // whose names the hash cannot be recomputed from.
+      fail('index unreadable, keeping it as-is', parseError)
+      return {}
+    }
+  }
+
+  // The derived name is authoritative for a registered workspace; the index only
+  // has to agree with it. A digest collision is rejected by the recorded path.
+  function parseOwned(text, ws) {
+    try {
+      const data = JSON.parse(text)
+      if (data && typeof data === 'object' && data.workspace && normalizePath(data.workspace.path) === normalized(ws)) {
+        return data
+      }
+    } catch { /* reported by the caller, which knows the file name */ }
+    return null
+  }
+
+  async function readConfig(ws) {
+    const fileName = fileNameFor(ws)
+    const registered = (await readIndex())[normalized(ws)]
+    // The index wins over the derived name. Sharing one workspace out of two
+    // harness homes, or editing the index by hand, would otherwise move the data
+    // to a new file and strand the old one.
+    if (registered && registered.file) {
+      const pointed = await readJson(configFile(root, registered.file))
+      if (!pointed.error) {
+        const data = parseOwned(pointed.text, ws)
+        if (data) return { data, file: registered.file }
+        fail(`${registered.file} is listed for this workspace but does not match it`)
+      }
+    }
+    if (fileName === (registered && registered.file)) return null
+    const direct = await readJson(configFile(root, fileName))
+    if (!direct.error) {
+      const data = parseOwned(direct.text, ws)
+      if (data) return { data, file: fileName }
+      fail(`${fileName} does not belong to this workspace, ignoring it`)
+    }
+    // Last resort for a hand-renamed or hand-copied file: scan the config
+    // directory, match on the recorded path, and adopt the match under the name
+    // mainline writes use.
+    let names = []
+    try {
+      names = await readdir(path.join(root, 'config'))
+    } catch { /* no store yet */ }
+    for (const name of names) {
+      if (!name.endsWith('.json') || name === fileName) continue
+      const candidate = await readJson(configFile(root, name))
+      if (candidate.error) continue
+      const data = parseOwned(candidate.text, ws)
+      if (!data) continue
+      try {
+        await atomicWrite(configFile(root, fileName), JSON.stringify(data, null, 2))
+        await syncIndex(ws, fileName)
+        return { data, file: fileName }
+      } catch (error) {
+        fail(`adopting ${name} under ${fileName} failed`, error)
+        return { data, file: name }
+      }
+    }
+    return null
+  }
+
+  // Register this workspace in the flat index. Read-modify-write, so two
+  // workspaces saving at once cannot drop each other's entry.
+  async function syncIndex(ws, fileName) {
+    const workspaces = await readIndex()
+    workspaces[normalized(ws)] = {
+      title: ws.title == null ? null : String(ws.title),
+      path: String(ws.path == null ? '' : ws.path),
+      file: fileName,
+      updatedAt: Date.now()
+    }
+    await atomicWrite(indexFile(root), JSON.stringify({ format: STORE_FORMAT, workspaces }, null, 2))
+  }
+
+  function enqueue(ws, task) {
+    const key = normalized(ws)
+    const run = (queues.get(key) || Promise.resolve()).then(task, task)
+    queues.set(key, run.then(() => {}, () => {}))
+    return run
+  }
+
+  return {
+    root,
+    // Persist one workspace: the config file, then the index entry that points at
+    // it. Both writes are ordered by `enqueue`, so a burst of edits from one
+    // workspace lands in the order it happened.
+    save(ws, payload) {
+      const fileName = fileNameFor(ws)
+      return enqueue(ws, async () => {
+        const body = {
+          format: STORE_FORMAT,
+          id: ws.id == null ? null : String(ws.id),
+          workspace: { path: String(ws.path == null ? '' : ws.path), title: ws.title == null ? null : String(ws.title) },
+          savedAt: Date.now(),
+          dirs: payload.dirs,
+          members: payload.members
+        }
+        await atomicWrite(configFile(root, fileName), JSON.stringify(body, null, 2))
+        await syncIndex(ws, fileName)
+        return configFile(root, fileName)
+      })
+    },
+    read: readConfig,
+    pathFor: (ws) => configFile(root, fileNameFor(ws)),
+    async info(ws) {
+      const found = await readConfig(ws)
+      if (!found) {
+        return { root, index: indexFile(root), configured: false, path: null, savedAt: null }
+      }
+      const target = configFile(root, found.file)
+      let savedAt = Number.isFinite(found.data.savedAt) ? found.data.savedAt : null
+      if (savedAt === null) {
+        const stats = await stat(target).catch(() => null)
+        savedAt = stats ? stats.mtimeMs : null
+      }
+      return { root, index: indexFile(root), configured: true, path: target, savedAt }
+    }
+  }
+}
 
 export function apply(ctx) {
     const registry = ctx.workspaceRegistry
     const query = ctx.sessionQuery
 
-    const KEY = '/.dsh-vdirs.json'
     const uid = () => 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
 
     // workspaceId -> { dirs, byId, members, loaded, catalog }
@@ -88,13 +319,101 @@ export function apply(ctx) {
     }
 
     // ---- durable directory state -------------------------------------------
+    // The store is built on first use, so `$DSH_HOME` is read from the live
+    // process and a failure here can never stop the plugin from loading.
+    let store = null
+    function storeOf() {
+      if (!store) {
+        store = createStore((message, error) => console.error(`[vdirs] ${message}:`, (error && error.message) || error))
+      }
+      return store
+    }
+
     function wsState(ws) {
       let s = state.get(ws.id)
       if (!s) {
-        s = { dirs: [], byId: new Map(), members: new Map(), loaded: false, catalog: { at: 0, ids: [], created: new Map() } }
+        s = {
+          dirs: [], byId: new Map(), members: new Map(), loaded: false, storePath: null,
+          catalog: { at: 0, ids: [], created: new Map() }
+        }
         state.set(ws.id, s)
       }
       return s
+    }
+
+    // One persisted shape in, one working state out. A directory is dropped unless
+    // it carries both an id and a name; members are kept only for directories that
+    // survived that filter.
+    function adopt(s, data) {
+      if (!data || !Array.isArray(data.dirs)) return false
+      for (const d of data.dirs) {
+        if (!d || typeof d.id !== 'string' || typeof d.name !== 'string') continue
+        if (s.byId.has(d.id)) continue
+        const dir = {
+          id: d.id,
+          name: d.name,
+          parentId: d.parentId ? String(d.parentId) : null,
+          createdAt: typeof d.createdAt === 'number' ? d.createdAt : Date.now()
+        }
+        s.dirs.push(dir)
+        s.byId.set(dir.id, dir)
+      }
+      const members = data.members && typeof data.members === 'object' ? data.members : {}
+      for (const key of Object.keys(members)) {
+        if (s.byId.has(key) && Array.isArray(members[key])) {
+          s.members.set(key, members[key].filter(id => typeof id === 'string'))
+        }
+      }
+      return true
+    }
+
+    // `.dsh-vdirs.json` left in the workspace root by 1.x. Read once, imported into
+    // the central store, then left alone: it is the upgrade path and a downgrade
+    // fallback, not a second source of truth.
+    async function readLegacy(ws) {
+      try {
+        return JSON.parse(await readFile(path.join(ws.path, LEGACY_FILE), 'utf8'))
+      } catch {
+        return null
+      }
+    }
+
+    async function ensure(ws) {
+      const s = wsState(ws)
+      if (s.loaded) return s
+      s.loaded = true
+      try {
+        const found = await storeOf().read(ws)
+        if (found) {
+          s.storePath = storeOf().pathFor(ws)
+          adopt(s, found.data)
+          return s
+        }
+        // No central file: adopt a 1.x workspace file and import it, so the tree
+        // survives the upgrade and later reads come from the central store.
+        const legacy = await readLegacy(ws)
+        if (legacy && adopt(s, legacy)) await await save(ws, s)
+      } catch (e) {
+        // A missing store is the normal first-run state, not an error worth
+        // interrupting a read for.
+        console.error('[vdirs] load failed:', (e && e.message) || e)
+      }
+      return s
+    }
+
+    function payloadOf(s) {
+      return {
+        dirs: s.dirs.map(d => ({ id: d.id, name: d.name, parentId: d.parentId, createdAt: d.createdAt })),
+        members: Object.fromEntries(s.members)
+      }
+    }
+
+    // Fire-and-forget on purpose: callers are RPC handlers that already answered
+    // with the in-memory tree, and a slow disk must not hold a drag-and-drop.
+    function save(ws, s) {
+      return storeOf().save(ws, payloadOf(s))
+        .then(target => { s.storePath = target; return target })
+        .catch(e => { console.error('[vdirs] persist failed:', (e && e.message) || e); return null })
     }
 
     // Move one session into a directory (or back to root when dirId is null),
@@ -123,7 +442,11 @@ export function apply(ctx) {
       const archived = archivedSet()
       const blanks = new Set()
       for (const row of await listRows()) {
-        if (row && row.sessionId && row.blank) blanks.add(String(row.sessionId))
+        if (row && row.sessionId == null) continue
+        // No `sessionController` means no blank flag: a listing that still has to
+        // show something may only drop rows it is certain about (archived ones),
+        // because eagerly hiding unproven rows would eat real sessions.
+        if (row && row.blank) blanks.add(String(row.sessionId))
       }
       const out = new Set()
       for (const id of ws.sessionIds || []) {
@@ -131,50 +454,6 @@ export function apply(ctx) {
         out.add(id)
       }
       return out
-    }
-
-    async function ensure(ws) {
-      const s = wsState(ws)
-      if (s.loaded) return s
-      s.loaded = true
-      const fsSvc = ctx.get('fs')
-      if (!fsSvc) return s
-      try {
-        const target = await fsSvc.resolve(ws.path + KEY, { cwd: ws.path })
-        const data = JSON.parse(await fsSvc.readText(target))
-        if (data && Array.isArray(data.dirs)) {
-          for (const d of data.dirs) {
-            if (!d || typeof d.id !== 'string' || typeof d.name !== 'string') continue
-            const dir = {
-              id: d.id,
-              name: d.name,
-              parentId: d.parentId ? String(d.parentId) : null,
-              createdAt: typeof d.createdAt === 'number' ? d.createdAt : Date.now()
-            }
-            s.dirs.push(dir)
-            s.byId.set(dir.id, dir)
-          }
-          const members = data.members && typeof data.members === 'object' ? data.members : {}
-          for (const key of Object.keys(members)) {
-            if (s.byId.has(key) && Array.isArray(members[key])) {
-              s.members.set(key, members[key].filter(id => typeof id === 'string'))
-            }
-          }
-        }
-      } catch (e) { /* file absent or unreadable: start empty */ }
-      return s
-    }
-
-    function save(ws, s) {
-      const fsSvc = ctx.get('fs')
-      if (!fsSvc) return
-      const payload = {
-        dirs: s.dirs.map(d => ({ id: d.id, name: d.name, parentId: d.parentId, createdAt: d.createdAt })),
-        members: Object.fromEntries(s.members)
-      }
-      fsSvc.resolve(ws.path + KEY, { cwd: ws.path })
-        .then(target => fsSvc.writeText(target, JSON.stringify(payload)))
-        .catch(e => console.error('[vdirs] persist failed:', e && e.message))
     }
 
     // Host list order plus createdAt for this workspace's members, one read and
@@ -213,6 +492,9 @@ export function apply(ctx) {
       return rank
     }
 
+    // Prunes members against the sessions this workspace may show. Awaiting the
+    // save keeps a response ordered after its own write, so two edits in flight
+    // cannot answer out of the order they were applied in.
     async function treeView(ws, s) {
       const ids = await showableIds(ws)
       let changed = false
@@ -226,7 +508,7 @@ export function apply(ctx) {
       for (const list of s.members.values()) for (const id of list) assigned.add(id)
       let rootCount = 0
       for (const id of ids) if (!assigned.has(id)) rootCount++
-      if (changed) save(ws, s)
+      if (changed) await await save(ws, s)
       return { dirs, rootCount, total: ids.size }
     }
 
@@ -238,7 +520,7 @@ export function apply(ctx) {
       if (dirKey) {
         const list = s.members.get(dirKey) || []
         const kept = list.filter(id => ids.has(id))
-        if (kept.length !== list.length) { s.members.set(dirKey, kept); save(ws, s) }
+        if (kept.length !== list.length) { s.members.set(dirKey, kept); await save(ws, s) }
         selected = kept
       } else {
         const assigned = new Set()
@@ -291,7 +573,32 @@ export function apply(ctx) {
 
     handle('tree', async (args) => {
       const { ws, s, error } = await scopeOf(args)
-      return error ? { error } : treeView(ws, s)
+      return error ? { error } : await treeView(ws, s)
+    })
+
+    // Where this workspace's tree actually lives on disk, and when it was last
+    // written. Answers "my directories disappeared" without reading code.
+    handle('store-info', async (args) => {
+      const { ws, s, error } = await scopeOf(args)
+      if (error) return { error }
+      const info = await storeOf().info(ws)
+      return { ...info, storePath: s.storePath, dirCount: s.dirs.length }
+    })
+
+    // Read-only dump of the durable tree, for a manual backup or a bug report.
+    handle('export', async (args) => {
+      const { ws, s, error } = await scopeOf(args)
+      if (error) return { error }
+      const info = await storeOf().info(ws)
+      return {
+        exportedAt: Date.now(),
+        workspace: { id: ws.id, title: ws.title, path: ws.path },
+        path: info.path,
+        storePath: s.storePath,
+        format: STORE_FORMAT,
+        dirs: s.dirs.map(d => ({ id: d.id, name: d.name, parentId: d.parentId, createdAt: d.createdAt })),
+        members: Object.fromEntries(s.members)
+      }
     })
 
     handle('sessions', async (args) => {
@@ -313,8 +620,8 @@ export function apply(ctx) {
       s.dirs.push(dir)
       s.byId.set(dir.id, dir)
       s.members.set(dir.id, [])
-      save(ws, s)
-      return treeView(ws, s)
+      await save(ws, s)
+      return await treeView(ws, s)
     })
 
     handle('rename-dir', async (args) => {
@@ -323,8 +630,8 @@ export function apply(ctx) {
       const dir = s.byId.get(String(args.dirId))
       if (!dir) return { error: 'dir-not-found' }
       const name = String(args.name == null ? '' : args.name).trim().slice(0, 80)
-      if (name) { dir.name = name; save(ws, s) }
-      return treeView(ws, s)
+      if (name) { dir.name = name; await save(ws, s) }
+      return await treeView(ws, s)
     })
 
     handle('delete-dir', async (args) => {
@@ -351,8 +658,8 @@ export function apply(ctx) {
         for (const id of orphans) if (!list.includes(id)) list.push(id)
         s.members.set(parentId, list)
       }
-      save(ws, s)
-      return treeView(ws, s)
+      await save(ws, s)
+      return await treeView(ws, s)
     })
 
     handle('move-session', async (args) => {
@@ -361,8 +668,8 @@ export function apply(ctx) {
       const target = args.dirId ? String(args.dirId) : null
       if (target && !s.byId.has(target)) return { error: 'dir-not-found' }
       assignSession(s, String(args.sessionId), target)
-      save(ws, s)
-      return treeView(ws, s)
+      await save(ws, s)
+      return await treeView(ws, s)
     })
 
     handle('reorder-dir', async (args) => {
@@ -371,7 +678,7 @@ export function apply(ctx) {
       const dir = s.byId.get(String(args.dirId))
       if (!dir) return { error: 'dir-not-found' }
       const targetId = args.targetId ? String(args.targetId) : null
-      if (targetId === dir.id) return treeView(ws, s)
+      if (targetId === dir.id) return await treeView(ws, s)
       if (targetId) {
         const target = s.byId.get(targetId)
         if (!target) return { error: 'target-not-found' }
@@ -385,8 +692,8 @@ export function apply(ctx) {
       } else {
         s.dirs.push(dir)
       }
-      save(ws, s)
-      return treeView(ws, s)
+      await save(ws, s)
+      return await treeView(ws, s)
     })
 
     // ---- static RPC registration -------------------------------------------
