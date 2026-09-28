@@ -1,0 +1,50 @@
+{
+  "name": "dsh-session-dir",
+  "version": "1.5.0",
+  "description": "DSH 虚拟目录会话管理器：把侧边栏会话列表替换成 VSCode 资源管理器式的目录树，支持拖拽移动/排序、会话重命名与归档，并让新建会话遵循官方「单个空白会话」语义。",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/index.js",
+    "src/client.js",
+    "cordis.patch.yml",
+    "docs"
+  ],
+  "scripts": {
+    "verify": "node scripts/verify-host.mjs && node scripts/verify-claim.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "react": "^18.2.0"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "cordis",
+    "sidebar",
+    "session",
+    "virtual-directory",
+    "workspace"
+  ]
+}

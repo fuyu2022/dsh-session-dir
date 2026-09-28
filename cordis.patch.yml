@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-session-dir
+      name: 'dsh-session-dir'
