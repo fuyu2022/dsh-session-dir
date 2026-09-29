@@ -29,7 +29,7 @@ const legacyText = JSON.stringify({
 await mkdir(WS_PATH, { recursive: true })
 await writeFile(LEGACY, legacyText, 'utf8')
 
-const ws = { id: 'w1', title: 'proj', path: WS_PATH, sessionIds: ['s-old', 's-blank', 's-arch'] }
+const ws = { id: 'w1', title: 'proj', path: WS_PATH, sessionIds: ['s-old', 's-blank', 's-arch', 's-fresh'] }
 const registry = {
   list: () => [ws],
   get: (id) => (id === 'w1' ? ws : undefined),
@@ -38,9 +38,16 @@ const registry = {
 
 const query = {
   async listSessions() {
-    return [{ header: { id: 's-old', createdAt: 100 } }, { header: { id: 's-blank', createdAt: 200 } }]
+    return [
+      { header: { id: 's-old', createdAt: 100 } },
+      { header: { id: 's-blank', createdAt: 200 } },
+      { header: { id: 's-fresh', createdAt: 300 } }
+    ]
   },
-  async listEvents() { return [{ time: 500 }] },
+  async listEvents(id) {
+    if (id === 's-old') return [{ time: 100 }, { time: 500, text: '帮我把原型图改一改' }]
+    return [{ time: 100 }]
+  },
   async readTitleSnapshots(ids) {
     return ids.map(sessionId => ({ sessionId, status: 'fulfilled', value: { title: { title: 'T-' + sessionId, updatedAt: 1 } } }))
   }
@@ -143,10 +150,10 @@ const main = async () => {
   // ---- 1.x workspace file: read, import, never rewritten ------------------
   const tree = await request('vdirs-tree', { workspaceId: 'w1' })
   check('tree returns the directory, pruned to showable sessions',
-    tree.result.ok && tree.result.value.total === 1 && tree.result.value.dirs[0].count === 1,
+    tree.result.ok && tree.result.value.total === 2 && tree.result.value.dirs[0].count === 1,
     tree.result.value)
   check('blank/archived/unknown members are reported as a single root count',
-    tree.result.value.rootCount === 0, tree.result.value)
+    tree.result.value.rootCount === 1, tree.result.value)
   check('the legacy workspace file is left exactly as it was',
     await readFile(LEGACY, 'utf8') === legacyText)
 
@@ -189,11 +196,33 @@ const main = async () => {
   check('the tree payload carries no recent-sessions count', !('recentCount' in tree.result.value), Object.keys(tree.result.value))
   const rootPage = await request('vdirs-sessions', { workspaceId: 'w1', dirId: null, offset: 0, limit: 50 })
   check('an unfocused blank never lands in the root listing',
-    rootPage.result.value.total === 0 && rootPage.result.value.items.every(i => i.sessionId !== 's-blank'),
+    rootPage.result.value.total === 1 && rootPage.result.value.items.every(i => i.sessionId !== 's-blank'),
     rootPage.result.value)
   const recentPage = await request('vdirs-sessions', { workspaceId: 'w1', dirId: 'recent', offset: 0, limit: 50 })
   check('the removed recent group degrades to an ordinary empty directory',
     recentPage.result.ok && recentPage.result.value.total === 0, recentPage.result.value)
+
+  // ---- session search ----------------------------------------------------
+  const titleHit = await request('vdirs-search', { workspaceId: 'w1', q: 'old', mode: 'title' })
+  check('title search finds the member with its directory and title',
+    titleHit.result.ok && titleHit.result.value.items.length === 1
+      && titleHit.result.value.items[0].sessionId === 's-old'
+      && titleHit.result.value.items[0].title === 'T-s-old'
+      && titleHit.result.value.items[0].dirId === 'd1'
+      && titleHit.result.value.items[0].dirName === '设计'
+      && titleHit.result.value.items[0].workspaceId === 'w1',
+    titleHit.result.value)
+  const bodyHit = await request('vdirs-search', { workspaceId: 'w1', q: '原型图', mode: 'full' })
+  check('full search finds the session by event body text',
+    bodyHit.result.ok && bodyHit.result.value.items.length === 1
+      && bodyHit.result.value.items[0].sessionId === 's-old',
+    bodyHit.result.value)
+  const blankHit = await request('vdirs-search', { workspaceId: 'w1', q: 's-blank', mode: 'full' })
+  check('blank sessions stay out of search results',
+    blankHit.result.ok && blankHit.result.value.items.length === 0, blankHit.result.value)
+  const noHit = await request('vdirs-search', { workspaceId: 'w1', q: '不存在xyz', mode: 'title' })
+  check('a no-match search answers with an empty result',
+    noHit.result.ok && noHit.result.value.items.length === 0 && noHit.result.value.total === 0, noHit.result.value)
 
   // ---- a missing optional service degrades, it does not hide sessions ------
   // Dropping `sessionController` mid-run does not change the cached list, and the
@@ -211,7 +240,44 @@ const main = async () => {
   check('move-session answers with the refreshed tree', moved.result.ok && moved.result.value.dirs[0].count === 1, moved.result.value)
   const back = await request('vdirs-move-session', { workspaceId: 'w1', sessionId: 's-old', dirId: null })
   check('move-session to null empties the directory',
-    back.result.value.dirs[0].count === 0 && back.result.value.rootCount === 1, back.result.value)
+    back.result.value.dirs[0].count === 0 && back.result.value.rootCount === 2, back.result.value)
+
+  // ---- session ordering --------------------------------------------------
+  // Put two showable sessions into d1 so we can assert both directory and root
+  // ordering. Members and rootOrder are persisted order lists; reorder-session
+  // rewrites them inside one container.
+  await request('vdirs-move-session', { workspaceId: 'w1', sessionId: 's-old', dirId: 'd1' })
+  await request('vdirs-move-session', { workspaceId: 'w1', sessionId: 's-fresh', dirId: 'd1' })
+  const order1 = await request('vdirs-sessions', { workspaceId: 'w1', dirId: 'd1', offset: 0, limit: 50 })
+  check('directory pages follow the persisted member order',
+    order1.result.value.items.map(i => i.sessionId).join(',') === 's-old,s-fresh', order1.result.value.items)
+  const sessReordered = await request('vdirs-reorder-session', { workspaceId: 'w1', sessionId: 's-fresh', dirId: 'd1', targetId: 's-old', place: 'before' })
+  check('reorder-session moves a session before its sibling',
+    sessReordered.result.ok && sessReordered.result.value.dirs[0].count === 2, sessReordered.result.value)
+  const order2 = await request('vdirs-sessions', { workspaceId: 'w1', dirId: 'd1', offset: 0, limit: 50 })
+  check('the new order is served immediately',
+    order2.result.value.items.map(i => i.sessionId).join(',') === 's-fresh,s-old', order2.result.value.items)
+  const orderFile = await readJson(stored.path, 80)
+  check('the directory order persists to the central file',
+    orderFile && orderFile.members.d1.join(',') === 's-fresh,s-old', orderFile && orderFile.members)
+  const badReorder = await request('vdirs-reorder-session', { workspaceId: 'w1', sessionId: 's-fresh', dirId: 'd1', targetId: 's-not-here', place: 'before' })
+  check('reorder-session rejects unknown targets',
+    badReorder.result.value.error === 'target-not-in-container', badReorder.result.value)
+  // Root ordering uses the same endpoint with dirId omitted.
+  await request('vdirs-move-session', { workspaceId: 'w1', sessionId: 's-old', dirId: null })
+  await request('vdirs-move-session', { workspaceId: 'w1', sessionId: 's-fresh', dirId: null })
+  const rootReorder = await request('vdirs-reorder-session', { workspaceId: 'w1', sessionId: 's-old', targetId: 's-fresh', place: 'after' })
+  check('root sessions reorder through the same endpoint',
+    rootReorder.result.ok && rootReorder.result.value.rootCount === 2, rootReorder.result.value)
+  const rootOrdered = await request('vdirs-sessions', { workspaceId: 'w1', dirId: null, offset: 0, limit: 50 })
+  check('the root page follows the persisted root order',
+    rootOrdered.result.value.items.map(i => i.sessionId).join(',') === 's-fresh,s-old', rootOrdered.result.value.items)
+  const rootOrderFile = await readJson(stored.path)
+  check('the root order persists as a rootOrder list',
+    rootOrderFile && Array.isArray(rootOrderFile.rootOrder) && rootOrderFile.rootOrder.join(',') === 's-fresh,s-old', { rootOrder: rootOrderFile && rootOrderFile.rootOrder })
+  const crossReorder = await request('vdirs-reorder-session', { workspaceId: 'w1', sessionId: 's-old', dirId: 'd1', targetId: 's-fresh', place: 'after' })
+  check('cross-container reorder is rejected once the session left that container',
+    crossReorder.result.value.error === 'session-not-in-container', crossReorder.result.value)
 
   // ---- directory CRUD ----------------------------------------------------
   const created = await request('vdirs-create-dir', { workspaceId: 'w1', parentId: null, name: '子目录' })
@@ -235,7 +301,7 @@ const main = async () => {
     dump.result.ok && dump.result.value.dirs.length === 2 && dump.result.value.workspace.path === WS_PATH, dump.result.value)
 
   const gone = await request('vdirs-delete-dir', { workspaceId: 'w1', dirId: 'd1' })
-  check('delete-dir removes it and reparents members', gone.result.value.dirs.length === 1 && gone.result.value.rootCount === 1, gone.result.value)
+  check('delete-dir removes it and reparents members', gone.result.value.dirs.length === 1 && gone.result.value.rootCount === 2, gone.result.value)
 
   // ---- reload: the store, not the workspace file, is the source of truth ---
   handler = null

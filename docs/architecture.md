@@ -31,9 +31,12 @@ dsh-session-dir/
   "workspace": { "path": "<明文路径>", "title": "<标题>" },
   "savedAt": 1730000000000,
   "dirs": [{ "id": "d…", "name": "设计", "parentId": null, "createdAt": 1 }],
-  "members": { "d…": ["<sessionId>"] }
+  "members": { "d…": ["<sessionId>"] },
+  "rootOrder": []
 }
 ```
+
+会话顺序就是持久顺序：目录内按 `members` 数组、根目录按 `rootOrder` 排列，拖拽排序（`vdirs-reorder-session`）直接改写并落盘，新会话追加在末尾。`rootOrder` 是新增的可选字段，旧文件没有它时根目录回退为 Host 列表顺序；`members` 数组一直是顺序列表，1.x 导入后即可排序。
 
 设计约束：
 

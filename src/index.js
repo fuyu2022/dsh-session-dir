@@ -48,7 +48,8 @@ function storeRoot() {
 }
 
 // Path identity: separators normalized and, on Windows, case-folded, because the
-// same directory can arrive as `D:\a\b` or `d:/a/b`. Display keeps the raw path.
+// same directory can arrive in either separator style and either case. Display
+// keeps the raw path.
 function normalizePath(value) {
   const text = String(value == null ? '' : value).trim().replace(/\\/g, '/')
   return process.platform === 'win32' ? text.toLowerCase() : text
@@ -219,7 +220,8 @@ function createStore(onError) {
           workspace: { path: String(ws.path == null ? '' : ws.path), title: ws.title == null ? null : String(ws.title) },
           savedAt: Date.now(),
           dirs: payload.dirs,
-          members: payload.members
+          members: payload.members,
+          rootOrder: Array.isArray(payload.rootOrder) ? payload.rootOrder : []
         }
         await atomicWrite(configFile(root, fileName), JSON.stringify(body, null, 2))
         await syncIndex(ws, fileName)
@@ -333,7 +335,7 @@ export function apply(ctx) {
       let s = state.get(ws.id)
       if (!s) {
         s = {
-          dirs: [], byId: new Map(), members: new Map(), loaded: false, storePath: null,
+          dirs: [], byId: new Map(), members: new Map(), rootOrder: [], loaded: false, storePath: null,
           catalog: { at: 0, ids: [], created: new Map() }
         }
         state.set(ws.id, s)
@@ -364,6 +366,9 @@ export function apply(ctx) {
           s.members.set(key, members[key].filter(id => typeof id === 'string'))
         }
       }
+      if (Array.isArray(data.rootOrder)) {
+        s.rootOrder = data.rootOrder.filter(id => typeof id === 'string')
+      }
       return true
     }
 
@@ -392,7 +397,7 @@ export function apply(ctx) {
         // No central file: adopt a 1.x workspace file and import it, so the tree
         // survives the upgrade and later reads come from the central store.
         const legacy = await readLegacy(ws)
-        if (legacy && adopt(s, legacy)) await await save(ws, s)
+        if (legacy && adopt(s, legacy)) await save(ws, s)
       } catch (e) {
         // A missing store is the normal first-run state, not an error worth
         // interrupting a read for.
@@ -404,7 +409,8 @@ export function apply(ctx) {
     function payloadOf(s) {
       return {
         dirs: s.dirs.map(d => ({ id: d.id, name: d.name, parentId: d.parentId, createdAt: d.createdAt })),
-        members: Object.fromEntries(s.members)
+        members: Object.fromEntries(s.members),
+        rootOrder: s.rootOrder
       }
     }
 
@@ -417,13 +423,20 @@ export function apply(ctx) {
     }
 
     // Move one session into a directory (or back to root when dirId is null),
-    // removing it from every directory's member list first.
+    // removing it from every directory's member list first. A directory's member
+    // list and the root order are ordered lists: an incoming session appends at
+    // the end, and reorder-session moves it within them.
     function assignSession(s, sessionId, dirId) {
       for (const [key, list] of s.members) {
         const next = list.filter(id => id !== sessionId)
         if (next.length !== list.length) s.members.set(key, next)
       }
-      if (!dirId) return
+      const rootNext = s.rootOrder.filter(id => id !== sessionId)
+      if (rootNext.length !== s.rootOrder.length) s.rootOrder = rootNext
+      if (!dirId) {
+        if (!s.rootOrder.includes(sessionId)) s.rootOrder.push(sessionId)
+        return
+      }
       const list = s.members.get(dirId) || []
       if (!list.includes(sessionId)) { list.push(sessionId); s.members.set(dirId, list) }
     }
@@ -492,6 +505,27 @@ export function apply(ctx) {
       return rank
     }
 
+    // The display order of one container. A directory follows its persisted
+    // member list — the order sessions arrived in and that reorder-session edits.
+    // The root follows the persisted rootOrder and appends anything not yet in it
+    // in Host-list order, so a fresh session never disappears and a workspace that
+    // never touched ordering keeps the old rank-based arrangement.
+    function orderedListFor(s, dirKey, ids, catalogued) {
+      if (dirKey) {
+        const list = s.members.get(dirKey) || []
+        return list.filter(id => ids.has(id))
+      }
+      const root = s.rootOrder.filter(id => ids.has(id))
+      const seen = new Set(root)
+      const inDirs = new Set()
+      for (const list of s.members.values()) for (const id of list) inDirs.add(id)
+      const rank = rankOf(orderedIds(catalogued, ids))
+      const rest = Array.from(ids)
+        .filter(id => !seen.has(id) && !inDirs.has(id))
+        .sort((a, b) => (rank.get(a) ?? 1e9) - (rank.get(b) ?? 1e9))
+      return root.concat(rest)
+    }
+
     // Prunes members against the sessions this workspace may show. Awaiting the
     // save keeps a response ordered after its own write, so two edits in flight
     // cannot answer out of the order they were applied in.
@@ -508,26 +542,14 @@ export function apply(ctx) {
       for (const list of s.members.values()) for (const id of list) assigned.add(id)
       let rootCount = 0
       for (const id of ids) if (!assigned.has(id)) rootCount++
-      if (changed) await await save(ws, s)
+      if (changed) await save(ws, s)
       return { dirs, rootCount, total: ids.size }
     }
 
     async function sessionsPage(ws, s, dirKey, offset, limit) {
       const ids = await showableIds(ws)
       const catalogued = await catalog(ws, s)
-      const rank = rankOf(orderedIds(catalogued, ids))
-      let selected
-      if (dirKey) {
-        const list = s.members.get(dirKey) || []
-        const kept = list.filter(id => ids.has(id))
-        if (kept.length !== list.length) { s.members.set(dirKey, kept); await save(ws, s) }
-        selected = kept
-      } else {
-        const assigned = new Set()
-        for (const list of s.members.values()) for (const id of list) assigned.add(id)
-        selected = Array.from(ids).filter(id => !assigned.has(id))
-      }
-      selected.sort((a, b) => (rank.get(a) ?? 1e9) - (rank.get(b) ?? 1e9))
+      const selected = orderedListFor(s, dirKey, ids, catalogued)
 
       const created = catalogued.created
       const active = await activeNow()
@@ -597,7 +619,8 @@ export function apply(ctx) {
         storePath: s.storePath,
         format: STORE_FORMAT,
         dirs: s.dirs.map(d => ({ id: d.id, name: d.name, parentId: d.parentId, createdAt: d.createdAt })),
-        members: Object.fromEntries(s.members)
+        members: Object.fromEntries(s.members),
+        rootOrder: s.rootOrder
       }
     })
 
@@ -672,6 +695,37 @@ export function apply(ctx) {
       return await treeView(ws, s)
     })
 
+    // Reorder one session within its container (a directory, or the root when
+    // dirId is absent). The container's order is the persisted member list /
+    // rootOrder, so dragging a row above or below a sibling rewrites that list.
+    handle('reorder-session', async (args) => {
+      const { ws, s, error } = await scopeOf(args)
+      if (error) return { error }
+      const dirKey = args.dirId ? String(args.dirId) : null
+      if (dirKey && !s.byId.has(dirKey)) return { error: 'dir-not-found' }
+      const ids = await showableIds(ws)
+      const catalogued = await catalog(ws, s)
+      const list = orderedListFor(s, dirKey, ids, catalogued)
+      const sessionId = String(args.sessionId)
+      const from = list.indexOf(sessionId)
+      if (from < 0) return { error: 'session-not-in-container' }
+      const targetId = args.targetId ? String(args.targetId) : null
+      if (targetId === sessionId) return await treeView(ws, s)
+      const at = targetId ? list.indexOf(targetId) : -1
+      if (targetId && at < 0) return { error: 'target-not-in-container' }
+      list.splice(from, 1)
+      if (targetId) {
+        const now = list.indexOf(targetId)
+        list.splice(args.place === 'after' ? now + 1 : now, 0, sessionId)
+      } else {
+        list.push(sessionId)
+      }
+      if (dirKey) s.members.set(dirKey, list)
+      else s.rootOrder = list
+      await save(ws, s)
+      return await treeView(ws, s)
+    })
+
     handle('reorder-dir', async (args) => {
       const { ws, s, error } = await scopeOf(args)
       if (error) return { error }
@@ -694,6 +748,121 @@ export function apply(ctx) {
       }
       await save(ws, s)
       return await treeView(ws, s)
+    })
+
+    // ---- session search ----------------------------------------------------
+    // Search caps: at most this many events per session are scanned and at most
+    // this many hits are returned, so a full-body search of a busy workspace
+    // stays bounded.
+    const SEARCH_LIMIT = 100
+    const EVENT_SCAN_LIMIT = 200
+
+    // Deep string harvest of one event: matches the query in whatever text the
+    // event carries (message bodies, tool calls, reasoning, model turns, …)
+    // without depending on a particular event schema.
+    function eventText(record) {
+      const out = []
+      const seen = new Set()
+      const walk = (value, depth) => {
+        if (depth > 10 || value == null) return
+        if (typeof value === 'string') {
+          if (value.length <= 8000) out.push(value)
+          return
+        }
+        if (typeof value !== 'object' || seen.has(value)) return
+        seen.add(value)
+        if (Array.isArray(value)) { for (const v of value) walk(v, depth + 1); return }
+        for (const key of Object.keys(value)) {
+          if (key === 'sessionId') continue
+          walk(value[key], depth + 1)
+        }
+      }
+      walk(record, 0)
+      return out.join('\n')
+    }
+
+    // One scan of a workspace's sessions: body hits plus the newest event time
+    // per session, gathered 8 at a time so a big workspace does not stall the
+    // event service. Sessions whose events fail to load are simply not findable
+    // by body text; the title pass still covers them.
+    async function scanEvents(ids, needle) {
+      const hits = new Set()
+      const lastTimes = new Map()
+      let i = 0
+      await Promise.all(Array.from({ length: Math.min(8, ids.length) }, async () => {
+        while (i < ids.length) {
+          const id = ids[i++]
+          try {
+            const records = await query.listEvents(id)
+            const recent = (records || []).slice(-EVENT_SCAN_LIMIT)
+            const last = recent[recent.length - 1]
+            if (last && typeof last.time === 'number') lastTimes.set(id, last.time)
+            if (recent.some(rec => eventText(rec).toLowerCase().includes(needle))) hits.add(id)
+          } catch (e) { /* body not searchable */ }
+        }
+      }))
+      return { hits, lastTimes }
+    }
+
+    // Search the workspace's showable sessions by title, or by title + event
+    // body when mode is 'full'. One workspace (via workspaceId) or all of them;
+    // every hit carries where it lives so the browser can jump straight there.
+    handle('search', async (args) => {
+      const q = String(args.q == null ? '' : args.q).trim()
+      if (!q) return { query: '', mode: 'title', items: [], total: 0 }
+      const needle = q.toLowerCase()
+      const mode = args.mode === 'full' ? 'full' : 'title'
+      const requested = args.workspaceId ? String(args.workspaceId) : null
+      const targets = requested ? [registry.get(requested)].filter(Boolean) : registry.list()
+      const active = await activeNow()
+      const found = []
+      for (const ws of targets) {
+        const s = await ensure(ws)
+        const ids = await showableIds(ws)
+        if (!ids.size) continue
+        const catalogued = await catalog(ws, s)
+        const dirOf = new Map()
+        for (const [dirId, list] of s.members) for (const id of list) if (!dirOf.has(id)) dirOf.set(id, dirId)
+        const titles = {}
+        try {
+          for (const result of (await query.readTitleSnapshots(Array.from(ids))) || []) {
+            if (!result) continue
+            const title = result.status === 'fulfilled' && result.value && result.value.title
+            titles[result.sessionId] = title ? title.title : result.sessionId
+          }
+        } catch (e) { /* fall back to the session id per row */ }
+
+        const shortlist = []
+        const body = mode === 'full' ? await scanEvents(Array.from(ids), needle) : null
+        for (const sessionId of ids) {
+          const title = titles[sessionId] || sessionId
+          if (title.toLowerCase().includes(needle) || (body && body.hits.has(sessionId))) shortlist.push(sessionId)
+        }
+        if (!shortlist.length) continue
+        const events = body
+          ? body.lastTimes
+          : (shortlist.length ? await eventTimeMap(shortlist) : new Map())
+        for (const sessionId of shortlist) {
+          const title = titles[sessionId] || sessionId
+          const dirId = dirOf.get(sessionId) || null
+          const dir = dirId ? s.byId.get(dirId) : null
+          const lastActiveAt = Math.max(events.get(sessionId) || 0, active.get(sessionId) || 0) || null
+          found.push({
+            workspaceId: ws.id,
+            workspaceTitle: ws.title,
+            sessionId,
+            title,
+            dirId,
+            dirName: dir ? dir.name : null,
+            createdAt: catalogued.created.get(sessionId) || null,
+            lastActiveAt
+          })
+        }
+        if (found.length >= SEARCH_LIMIT) break
+      }
+      found.sort((a, b) => (b.lastActiveAt || 0) - (a.lastActiveAt || 0))
+      const items = found.slice(0, SEARCH_LIMIT)
+      return { query: q, mode, items, total: items.length }
     })
 
     // ---- static RPC registration -------------------------------------------

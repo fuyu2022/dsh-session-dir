@@ -69,7 +69,9 @@ window.__ModuleLoader__.load({
 .vds-hint{color:var(--dsw-alias-label-secondary);font-size:11px;padding:4px;}
 .vds-rail{width:100%;display:flex;justify-content:center;padding:12px 0;background:none;border:none;color:var(--dsw-alias-label-secondary);cursor:pointer;}
 .vds-rail:hover{color:var(--dsw-alias-brand-primary);}
-.vds-sec{margin-top:4px;}
+.vds-sec{margin-top:4px;padding-top:4px;border-top:1px solid rgba(127,127,127,.3);border-left:1px solid rgba(127,127,127,.3);border-top-left-radius:8px;}
+.vds-sec[draggable=true]{cursor:grab;}
+.vds-sec[draggable=true]:active{cursor:grabbing;}
 .vds-sec-head{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;color:var(--dsw-alias-label-primary);}
 .vds-sec-head:hover{background:rgba(127,127,127,.12);}
 .vds-sec-head-open{background:rgba(127,127,127,.08);}
@@ -93,7 +95,6 @@ window.__ModuleLoader__.load({
 .vds-rootzone{display:flex;flex-direction:column;gap:2px;border-radius:6px;}
 .vds-rootzone.vds-drop-into{padding:2px;}
 .vds-rootslot{border:1px dashed var(--dsw-alias-border-l2);border-radius:6px;margin:2px 4px;padding:10px 8px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:11px;}
-.vds-sep{height:1px;background:var(--dsw-alias-border-l1);margin:4px 2px;flex-shrink:0;}
 .vds-row{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;cursor:default;color:var(--dsw-alias-label-primary);}
 .vds-row:hover{background:rgba(127,127,127,.13);}
 .vds-row-active{background:rgba(96,150,255,.20);}
@@ -120,20 +121,30 @@ window.__ModuleLoader__.load({
 .vds-tip-on{display:flex;}
 .vds-tip-k{color:var(--dsw-alias-label-secondary);}
 .vds-tip-id{display:inline-block;max-width:260px;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom;white-space:nowrap;}
+.vds-btn-ghost{background:transparent;border:none;color:var(--dsw-alias-label-secondary);padding:4px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.vds-btn-ghost:hover{background:rgba(127,127,127,.15);color:var(--dsw-alias-label-primary);}
+.vds-search-overlay{position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.42);display:flex;align-items:center;justify-content:center;}
+.vds-search-modal{width:min(560px,calc(100vw - 48px));max-height:72vh;display:flex;flex-direction:column;gap:12px;background:var(--dsw-specific-menu,var(--dsw-alias-bg-overlay));backdrop-filter:var(--dsw-menu-backdrop-filter);box-shadow:var(--dsw-elevation-prominent);border-radius:16px;padding:16px;}
+.vds-search-head{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;}
+.vds-search-title{color:var(--dsw-alias-label-primary);}
+.vds-search-hint{font-size:11px;font-weight:400;color:var(--dsw-alias-label-secondary);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vds-search-close{margin-left:auto;background:none;border:none;color:var(--dsw-alias-label-secondary);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:13px;}
+.vds-search-close:hover{background:rgba(127,127,127,.18);color:var(--dsw-alias-label-primary);}
+.vds-search-input{width:100%;box-sizing:border-box;height:40px;font-size:14px;}
+.vds-search-modes{display:flex;gap:8px;flex-wrap:wrap;}
+.vds-mode{background:transparent;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:4px 12px;font-size:12px;cursor:pointer;}
+.vds-mode:hover{background:rgba(127,127,127,.12);}
+.vds-mode-on{background:rgba(96,150,255,.18);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary);}
+.vds-search-body{overflow-y:auto;display:flex;flex-direction:column;gap:2px;max-height:36vh;}
+.vds-search-result{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;cursor:pointer;}
+.vds-search-result:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.13));}
+.vds-search-hit-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1;color:var(--dsw-alias-label-primary);font-size:13px;}
+.vds-search-meta{font-size:11px;color:var(--dsw-alias-label-secondary);flex-shrink:0;max-width:42%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vds-search-empty{padding:14px 8px;font-size:12px;color:var(--dsw-alias-label-secondary);text-align:center;}
+.vds-search-count{font-size:11px;color:var(--dsw-alias-label-secondary);padding:2px 8px;text-align:right;}
 `)
 
     // ---------------- helpers ----------------
-    function relTime(ts) {
-      if (!ts) return ''
-      const s = Math.floor((Date.now() - ts) / 1000)
-      if (s < 60) return '刚刚'
-      if (s < 3600) return Math.floor(s / 60) + ' 分钟前'
-      if (s < 86400) return Math.floor(s / 3600) + ' 小时前'
-      if (s < 86400 * 30) return Math.floor(s / 86400) + ' 天前'
-      const d = new Date(ts)
-      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
-    }
-
     function fmtFull(ts) {
       if (!ts) return '未知'
       const d = new Date(ts)
@@ -323,6 +334,17 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // Minimal line search glyph: a circle and a handle, no fill. The ghost
+    // button that wears it is transparent, so the icon reads as a bare outline
+    // until hover gives it a wash.
+    function SearchIcon(props) {
+      const s = props.size ?? 14
+      return h('svg', { width: s, height: s, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' },
+        h('circle', { cx: 11, cy: 11, r: 7 }),
+        h('path', { d: 'M16.5 16.5 L20.5 20.5' })
+      )
+    }
+
     function FolderIcon(props) {
       const s = props.size ?? 20
       return h('svg', { width: s, height: s, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6 },
@@ -400,6 +422,12 @@ window.__ModuleLoader__.load({
       const tipTimer = useRef(null)
       const clearTimer = useRef(null)
       const prevClaim = useRef(null)
+      const [searchOpen, setSearchOpen] = useState(false)
+      const [searchQ, setSearchQ] = useState('')
+      const [searchMode, setSearchMode] = useState('title')
+      const [searchRes, setSearchRes] = useState(null)
+      const [searching, setSearching] = useState(false)
+      const searchTimer = useRef(null)
 
       const claim = useSyncExternalStore(subscribeClaim, claimSnapshot, claimSnapshot)
       const sessionsState = useSyncExternalStore(subscribeSessionList, sessionListSnapshot, sessionListSnapshot)
@@ -440,7 +468,7 @@ window.__ModuleLoader__.load({
         cancelTipTimer()
         setTipFor(prev => prev === sessionId ? null : prev)
       }
-      useEffect(() => () => { cancelTipTimer(); cancelClear() }, [])
+      useEffect(() => () => { cancelTipTimer(); cancelClear(); cancelSearchTimer() }, [])
 
       const updView = (wsId, upd) => setViews(prev => {
         const v = prev[wsId] || { tree: null, open: {}, pages: {}, menu: null, sel: null }
@@ -580,6 +608,13 @@ window.__ModuleLoader__.load({
         callTree(wsId, 'vdirs-reorder-dir', { dirId, targetId: targetId || null, place: place || 'before' })
       }
 
+      // Drag a session above/below a sibling inside the same container. dirId
+      // is the container key ('root' or a directory id); the response refreshes
+      // the tree and every open page.
+      const reorderSession = (wsId, dirId, sessionId, targetId, place) => {
+        callTree(wsId, 'vdirs-reorder-session', { dirId: dirId === 'root' ? null : dirId, sessionId, targetId, place: place || 'before' })
+      }
+
       const saveSessionRename = (wsId, sessionId) => {
         const title = sessionName.trim()
         setSessionRenaming(null)
@@ -644,6 +679,55 @@ window.__ModuleLoader__.load({
         if (!wsvc || typeof wsvc.delete !== 'function') return
         wsvc.delete(wsId).then(refreshWorkspaces).catch(e => setError('删除工作区失败: ' + String((e && e.message) || e)))
       }
+
+      // Move one workspace within the durable registry order: insert before
+      // beforeId, or append at the end when beforeId is omitted — the same
+      // DOM-insertBefore-like contract the shipped browser's row drag uses.
+      const reorderWorkspace = (wsId, beforeId) => {
+        const wsvc = wsSvc()
+        if (!wsvc || typeof wsvc.insertBefore !== 'function') return
+        wsvc.insertBefore(wsId, beforeId || undefined)
+          .then(refreshWorkspaces)
+          .catch(e => setError('排序工作区失败: ' + String((e && e.message) || e)))
+      }
+
+      // ---------------- search modal ----------------
+      const cancelSearchTimer = () => {
+        if (searchTimer.current) { try { searchTimer.current() } catch (e) {} searchTimer.current = null }
+      }
+      const runSearch = (q, mode) => {
+        const needle = String(q == null ? searchQ : q).trim()
+        const m = mode || searchMode
+        if (!needle) { setSearchRes(null); setSearching(false); return }
+        setSearching(true)
+        rpc.call('vdirs-search', { q: needle, mode: m }).then(res => {
+          setSearchRes(res && Array.isArray(res.items) ? res : { items: [], total: 0 })
+          setSearching(false)
+        }).catch(e => {
+          setError('搜索失败: ' + String((e && e.message) || e))
+          setSearchRes({ items: [], total: 0 })
+          setSearching(false)
+        })
+      }
+      const scheduleSearch = (q) => {
+        setSearchQ(q)
+        cancelSearchTimer()
+        if (!String(q).trim()) { setSearchRes(null); setSearching(false); return }
+        const svc = timerSvc()
+        if (!svc || typeof svc.timeout !== 'function') { runSearch(q, null); return }
+        try {
+          searchTimer.current = svc.timeout(() => { searchTimer.current = null; runSearch(q, null) }, 300)
+        } catch (e) { runSearch(q, null) }
+      }
+      const pickMode = (m) => {
+        if (m === searchMode) return
+        cancelSearchTimer()
+        setSearchMode(m)
+        runSearch(searchQ, m)
+      }
+      const openSearch = () => { setSearchOpen(true); setSearchQ(''); setSearchRes(null); setSearching(false) }
+      const closeSearch = () => { cancelSearchTimer(); setSearchOpen(false) }
+      const openSearchHit = (hit) => { closeSearch(); openSession(hit.sessionId) }
 
       useEffect(() => {
         let alive = true
@@ -740,12 +824,20 @@ window.__ModuleLoader__.load({
             const isDragging = drag && drag.type === 'session' && drag.sessionId === it.sessionId
             const ren = sessionRenaming && sessionRenaming.wsId === w.id && sessionRenaming.sessionId === it.sessionId
             const tipShow = tipFor === it.sessionId && !drag
+            // A same-container drag previews an insertion line above or below the
+            // hovered sibling; cross-container falls through to the directory/root
+            // drop zones ("move into").
+            const sessTgt = drag && drag.type === 'session' && dropTgt && dropTgt.kind === 'sess'
+              && dropTgt.wsId === w.id && dropTgt.id === it.sessionId ? dropTgt : null
             out.push(
-              h('div', { key: it.sessionId, className: 'vds-row vds-tiprow' + (isDragging ? ' vds-dragging' : ''), style: { paddingLeft: 4 }, draggable: true, onClick: () => openSession(it.sessionId),
+              h('div', { key: it.sessionId, className: 'vds-row vds-tiprow' + (isDragging ? ' vds-dragging' : '') + (sessTgt ? (sessTgt.place === 'after' ? ' vds-drop-after' : ' vds-drop-before') : ''), style: { paddingLeft: 4 }, draggable: true, onClick: () => openSession(it.sessionId),
                 onMouseEnter: () => startTip(it.sessionId),
                 onMouseLeave: () => clearTip(it.sessionId),
-                onDragStart: e => { e.dataTransfer.setData('text/plain', it.sessionId); e.dataTransfer.effectAllowed = 'move'; setDrag({ type: 'session', sessionId: it.sessionId, wsId: w.id }) },
-                onDragEnd: endDrag },
+                onDragStart: e => { e.dataTransfer.setData('text/plain', it.sessionId); e.dataTransfer.effectAllowed = 'move'; setDrag({ type: 'session', sessionId: it.sessionId, wsId: w.id, container: dirKey }) },
+                onDragEnd: endDrag,
+                onDragOver: e => sessOver(e, it, dirKey),
+                onDragLeave: () => { if (drag && drag.type === 'session') scheduleClear() },
+                onDrop: e => sessDrop(e, it, dirKey) },
                 h('span', { className: running.has(it.sessionId) ? 'vds-dot' : 'vds-dot-off' }),
                 h('span', { className: 'vds-sess-title' }, it.title || it.sessionId),
                 h('span', { className: 'vds-acts', onClick: e => e.stopPropagation() },
@@ -810,6 +902,32 @@ window.__ModuleLoader__.load({
           const blocker = blockerId(e)
           if (blocker !== null && blocker !== d.id) return
           moveSession(w.id, dropped.sessionId, d.id)
+        }
+
+        // Same-container session reorder: hovering the top/bottom half of a
+        // sibling row previews an insertion line, dropping commits it. A drag
+        // from another container is ignored here on purpose — it bubbles to the
+        // wrap/root drop handler and becomes a move into that container.
+        const sessOver = (e, it, dirKey) => {
+          if (!drag || drag.wsId !== w.id || drag.type !== 'session') return
+          if (drag.sessionId === it.sessionId || (drag.container || 'root') !== dirKey) return
+          e.preventDefault(); e.dataTransfer.dropEffect = 'move'
+          e.stopPropagation()
+          cancelClear()
+          const rect = e.currentTarget.getBoundingClientRect()
+          const place = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after'
+          setDropTgt(prev => prev && prev.kind === 'sess' && prev.id === it.sessionId && prev.place === place && prev.wsId === w.id ? prev : { kind: 'sess', id: it.sessionId, place, wsId: w.id })
+        }
+        const sessDrop = (e, it, dirKey) => {
+          const same = drag && drag.wsId === w.id && drag.type === 'session'
+            && (drag.container || 'root') === dirKey && drag.sessionId !== it.sessionId
+          if (!same) return
+          const dropped = drag
+          const rect = e.currentTarget.getBoundingClientRect()
+          const place = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after'
+          e.preventDefault(); e.stopPropagation()
+          endDrag()
+          reorderSession(w.id, dirKey, dropped.sessionId, it.sessionId, place)
         }
 
         const dirRows = (parentId) => {
@@ -922,7 +1040,41 @@ window.__ModuleLoader__.load({
           else if (dropped.type === 'dir' && dropped.parentId === null) reorderDir(w.id, dropped.dirId, null, 'before')
         }
 
-        // ---- workspace body: root zone | sep | directories ----
+        // Workspace reorder: drag a workspace section above/below a sibling.
+        const wsOver = (e, target) => {
+          if (!drag || drag.type !== 'ws' || drag.wsId === target.id) return
+          e.preventDefault(); e.dataTransfer.dropEffect = 'move'
+          cancelClear()
+          const rect = e.currentTarget.getBoundingClientRect()
+          const place = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after'
+          setDropTgt(prev => prev && prev.kind === 'ws' && prev.id === target.id && prev.place === place ? prev : { kind: 'ws', id: target.id, place })
+        }
+        const wsDrop = (e, target) => {
+          e.preventDefault()
+          const dropped = drag
+          endDrag()
+          if (!dropped || dropped.type !== 'ws' || dropped.wsId === target.id) return
+          const rect = e.currentTarget.getBoundingClientRect()
+          const place = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after'
+          let beforeId
+          if (place === 'before') {
+            beforeId = target.id
+          } else {
+            // "After target": insert before the workspace following it in the
+            // current order, or append when it is already the last one. Skipping
+            // the dragged id keeps a no-op drop (already right after the target)
+            // from jumping it to the end.
+            const idx = workspaces.findIndex(x => x.id === target.id)
+            const next = idx >= 0 ? workspaces.slice(idx + 1).find(x => x.id !== dropped.wsId) : undefined
+            beforeId = next ? next.id : undefined
+          }
+          reorderWorkspace(dropped.wsId, beforeId)
+        }
+
+        const wsDragging = drag && drag.type === 'ws' && drag.wsId === w.id
+        const wsTgt = drag && drag.type === 'ws' && dropTgt && dropTgt.kind === 'ws' && dropTgt.id === w.id ? dropTgt : null
+
+        // ---- workspace body: root zone | directories ----
         // Always rendered, so an empty workspace (or one holding directories but
         // no sessions yet) still shows its tree.
         const content = []
@@ -939,13 +1091,15 @@ window.__ModuleLoader__.load({
             onDrop: rootDrop },
             zoneKids
           ))
-          if (tree.rootCount > 0 && tree.dirs.length > 0) {
-            content.push(h('div', { key: 'sep2', className: 'vds-sep' }))
-          }
         }
         dirRows(null).forEach(r => content.push(r))
 
-        return h('div', { key: w.id, className: 'vds-sec' },
+        return h('div', { key: w.id, className: 'vds-sec' + (wsTgt ? (wsTgt.place === 'after' ? ' vds-drop-after' : ' vds-drop-before') : '') + (wsDragging ? ' vds-dragging' : ''), draggable: true, title: '拖拽排序工作区',
+          onDragStart: e => { e.dataTransfer.setData('text/plain', w.id); e.dataTransfer.effectAllowed = 'move'; setDrag({ type: 'ws', wsId: w.id }) },
+          onDragEnd: endDrag,
+          onDragOver: e => wsOver(e, w),
+          onDragLeave: () => scheduleClear(),
+          onDrop: e => wsDrop(e, w) },
           h('div', { className: 'vds-sec-head' + (isOpen ? ' vds-sec-head-open' : ''), onClick: () => toggleWs(w.id) },
             // Folder + disclosure triangle, the shipped workspace row's own pair.
             h('span', { className: 'vds-folder' }, h(WorkspaceFolderIcon, { size: 16, open: isOpen })),
@@ -973,16 +1127,65 @@ window.__ModuleLoader__.load({
         )
       })
 
-      return h('div', { className: 'vds-side' },
-        h('div', { className: 'vds-side-head' },
-          h('span', { className: 'vds-title' }, '会话'),
-          h('span', { className: 'vds-spacer' }),
-          h('button', { className: 'vds-btn', onClick: addWorkspace }, '＋工作区'),
-          h('button', { className: 'vds-btn', onClick: () => { refreshWorkspaces().catch(() => {}) } }, '刷新')
-        ),
-        error ? h('div', { className: 'vds-err' }, error) : null,
-        secs
+      const searchResItems = searchRes && Array.isArray(searchRes.items) ? searchRes.items : []
+      const overlay = h('div', { key: 'vds-search-overlay', className: 'vds-search-overlay', onClick: closeSearch },
+        h('div', { className: 'vds-search-modal', onClick: e => e.stopPropagation() },
+          h('div', { className: 'vds-search-head' },
+            h('span', { className: 'vds-search-title' }, '搜索会话'),
+            h('span', { className: 'vds-search-hint' }, searchMode === 'full' ? '全量搜索：标题 + 对话内容' : '仅按标题搜索'),
+            h('button', { className: 'vds-search-close', title: '关闭 (Esc)', onClick: closeSearch }, '✕')
+          ),
+          h('input', {
+            className: 'vds-input vds-search-input',
+            placeholder: searchMode === 'full' ? '搜索标题与全部对话内容…' : '输入会话标题关键词…',
+            value: searchQ,
+            autoFocus: true,
+            onChange: e => scheduleSearch(e.target.value),
+            onKeyDown: e => {
+              if (e.key === 'Enter') { cancelSearchTimer(); runSearch(searchQ, null) }
+              if (e.key === 'Escape') { e.stopPropagation(); closeSearch() }
+            }
+          }),
+          h('div', { className: 'vds-search-modes' },
+            h('button', { className: 'vds-mode' + (searchMode === 'title' ? ' vds-mode-on' : ''), onClick: () => pickMode('title') }, '仅标题搜索'),
+            h('button', { className: 'vds-mode' + (searchMode === 'full' ? ' vds-mode-on' : ''), onClick: () => pickMode('full') }, '全量搜索')
+          ),
+          searching
+            ? h('div', { className: 'vds-search-empty' }, '搜索中…')
+            : (!searchQ.trim()
+              ? h('div', { className: 'vds-search-empty' }, '输入关键词即可搜索；切换模式会按当前关键词重新搜索。')
+              : (searchResItems.length === 0
+                ? h('div', { className: 'vds-search-empty' }, '未找到匹配的会话。')
+                : h('div', { className: 'vds-search-body' },
+                    searchResItems.map(it => h('div', {
+                      key: it.workspaceId + '/' + it.sessionId,
+                      className: 'vds-search-result',
+                      title: '打开会话',
+                      onClick: () => openSearchHit(it)
+                    },
+                      h('span', { className: running.has(it.sessionId) ? 'vds-dot' : 'vds-dot-off' }),
+                      h('span', { className: 'vds-search-hit-title' }, it.title || it.sessionId),
+                      h('span', { className: 'vds-search-meta' }, (it.workspaceTitle || '') + (it.dirName ? ' · ' + it.dirName : ' · 根目录'))
+                    )),
+                    h('div', { className: 'vds-search-count' }, '共 ' + searchResItems.length + ' 个匹配会话' + (searchRes && searchRes.total > searchResItems.length ? '（仅显示前 ' + searchResItems.length + ' 个）' : ''))
+                  )))
+        )
       )
+
+      return [
+        h('div', { key: 'vds-side', className: 'vds-side' },
+          h('div', { className: 'vds-side-head' },
+            h('span', { className: 'vds-title' }, '会话'),
+            h('span', { className: 'vds-spacer' }),
+            h('button', { className: 'vds-btn', onClick: addWorkspace }, '＋工作区'),
+            h('button', { className: 'vds-btn', onClick: () => { refreshWorkspaces().catch(() => {}) } }, '刷新'),
+            h('button', { className: 'vds-btn-ghost', title: '搜索会话', onClick: openSearch }, h(SearchIcon, { size: 14 }))
+          ),
+          error ? h('div', { className: 'vds-err' }, error) : null,
+          secs
+        ),
+        searchOpen ? overlay : null
+      ]
     }
 
     function SidebarBrowser(props) {

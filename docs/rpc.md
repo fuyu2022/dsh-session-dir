@@ -10,8 +10,10 @@ Client 走 `ctx.connection.rpc.call`，路由挂在 Connection 通道 `/vdirs` �
 | `vdirs-rename-dir` | `{workspaceId,dirId,name}` | 重命名 |
 | `vdirs-delete-dir` | `{workspaceId,dirId}` | 删目录（成员回移上级） |
 | `vdirs-move-session` | `{workspaceId,sessionId,dirId?}` | 移动会话，`dirId=null` 回根；空白会话首次对话后也走这里落库 |
+| `vdirs-reorder-session` | `{workspaceId,dirId?,sessionId,targetId?,place}` | 容器内会话排序：`dirId` 缺省为根；把 `sessionId` 移到 `targetId` 之前/之后（`place`=`before`/`after`），省略 `targetId` 移到底部；会话与目标须在同一容器，否则报 `session-not-in-container` |
 | `vdirs-reorder-dir` | `{workspaceId,dirId,targetId?,place}` | 同级排序 |
-| `vdirs-sessions` | `{workspaceId,dirId?,offset,limit}` | 分页会话列表；`dirId` 缺省为根，每行 `{sessionId,title,createdAt,lastActiveAt}` |
+| `vdirs-sessions` | `{workspaceId,dirId?,offset,limit}` | 分页会话列表；`dirId` 缺省为根，每行 `{sessionId,title,createdAt,lastActiveAt}`。顺序即用户排序：目录按持久化成员列表、根按 `rootOrder`，新加入的会话追加在末尾；旧数据没有顺序时根目录回退为 Host 列表顺序 |
+| `vdirs-search` | `{q,mode,workspaceId?}` | 会话搜索：`mode`=`title`（仅标题）或 `full`（标题+对话内容，每个会话至多扫最近 200 条事件）；省略 `workspaceId` 时跨全部工作区，每行 `{workspaceId,workspaceTitle,sessionId,title,dirId,dirName,createdAt,lastActiveAt}`，结果按最后活跃倒序，至多 100 条 |
 | `vdirs-store-info` | `{workspaceId}` | 诊断：`{root,index,configured,path,savedAt,storePath,dirCount}` —— 这份目录树究竟存在哪个绝对路径、何时写的 |
 | `vdirs-export` | `{workspaceId}` | 只读导出：`{exportedAt,workspace,path,format,dirs,members}`，供手工备份或报障 |
 

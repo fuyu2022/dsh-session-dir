@@ -114,11 +114,21 @@ let registered = null
 let rerenderPending = false
 const rpcCalls = []
 const startSessionCalls = []
+const openSessionCalls = []
 // Mirrors the Host: the committed session becomes a member of d1.
-let treeState = { dirs: [{ id: 'd1', name: '设计', parentId: null, count: 0 }], rootCount: 0, total: 0 }
+let treeState = { dirs: [{ id: 'd1', name: '设计', parentId: null, count: 2 }], rootCount: 0, total: 2 }
 // The Host page for one directory key, so the root listing can be made to still
-// serve a blank row (the reported regression).
-let pages = {}
+// serve a blank row (the reported regression). Two real sessions live in d1 so
+// the drag-reorder flow has siblings to reorder between.
+let pages = {
+  d1: {
+    items: [
+      { sessionId: 's-a', title: '会话甲', createdAt: 1, lastActiveAt: 1 },
+      { sessionId: 's-b', title: '会话乙', createdAt: 2, lastActiveAt: 2 }
+    ],
+    total: 2, hasMore: false
+  }
+}
 const pageFor = (dirId) => pages[dirId || 'root'] || { items: [], total: 0, hasMore: false }
 
 function boot() {
@@ -132,7 +142,7 @@ function boot() {
       if (name === 'uiWorkspace') {
         return {
           startSession(wsId) { startSessionCalls.push(wsId) },
-          openSession() {},
+          openSession(sessionId) { openSessionCalls.push(sessionId) },
           archiveSession: async () => {},
           pickDirectory: async () => null
         }
@@ -157,6 +167,21 @@ function boot() {
               if (method === 'vdirs-move-session') {
                 treeState = { dirs: [{ id: 'd1', name: '设计', parentId: null, count: 1 }], rootCount: 0, total: 1 }
                 return Promise.resolve({ ok: true, value: treeState })
+              }
+              if (method === 'vdirs-reorder-session') {
+                treeState = { dirs: [{ id: 'd1', name: '设计', parentId: null, count: 2 }], rootCount: 0, total: 2 }
+                return Promise.resolve({ ok: true, value: treeState })
+              }
+              if (method === 'vdirs-search') {
+                const needle = String(payload.q || '').toLowerCase()
+                const mode = payload.mode === 'full' ? 'full' : 'title'
+                // The second row is discoverable only by body text in full mode.
+                const rows = [
+                  { workspaceId: 'w1', workspaceTitle: 'proj', sessionId: 's-other', title: '既有会话 proj', dirId: 'd1', dirName: '设计', createdAt: 1, lastActiveAt: 3 },
+                  { workspaceId: 'w1', workspaceTitle: 'proj', sessionId: 's-old', title: '旧会话', dirId: null, dirName: null, createdAt: 2, lastActiveAt: 5 }
+                ]
+                const items = rows.filter(it => it.title.toLowerCase().includes(needle) || (mode === 'full' && it.sessionId === 's-old'))
+                return Promise.resolve({ ok: true, value: { query: payload.q, mode, items, total: items.length } })
               }
               return Promise.resolve({ ok: true, value: {} })
             }
@@ -349,6 +374,91 @@ const main = async () => {
   check('the directory name no longer carries the folder emoji',
     collect(n => hasClass(n, 'vds-dir-name')).every(n => !textOf(n).includes('📁')),
     collect(n => hasClass(n, 'vds-dir-name')).map(textOf))
+
+  // ---- 9. session search: ghost icon, modal, debounce, mode switch --------
+  const searchButtons = () => actions('搜索会话', 'vds-btn-ghost')
+  const searchCalls = () => rpcCalls.filter(c => c.method === 'vdirs-search')
+  const hits = () => collect(n => hasClass(n, 'vds-search-hit-title')).map(n => textOf(n))
+  const iconTree = renderToTree(searchButtons()[0].props.children)
+  check('the ＋工作区 row wears a transparent line-only search glyph at its end',
+    searchButtons().length === 1 && iconTree && iconTree.type === 'svg'
+      && iconTree.props.viewBox === '0 0 24 24'
+      && iconTree.props.fill === 'none'
+      && iconTree.props.stroke === 'currentColor',
+    searchButtons().length)
+  searchButtons()[0].props.onClick()
+  await flush(); paint()
+  check('the icon opens a centered modal with one input and two mode pills',
+    collect(n => hasClass(n, 'vds-search-overlay')).length === 1
+      && collect(n => hasClass(n, 'vds-search-modal')).length === 1
+      && collect(n => hasClass(n, 'vds-search-input')).length === 1
+      && collect(n => hasClass(n, 'vds-mode')).length === 2,
+    collect(n => hasClass(n, 'vds-search-input')).length)
+
+  const input = collect(n => hasClass(n, 'vds-search-input'))[0]
+  input.props.onChange({ target: { value: 'proj' } })
+  advance(300); await flush(); paint()
+  check('typing searches titles after a debounce',
+    hits().length === 1 && hits()[0] === '既有会话 proj' && searchCalls().length === 1
+      && searchCalls()[0].payload.q === 'proj' && searchCalls()[0].payload.mode === 'title',
+    { hits: hits(), calls: searchCalls().map(c => c.payload) })
+  const meta = collect(n => hasClass(n, 'vds-search-meta')).map(n => textOf(n))
+  check('each hit carries its workspace and directory breadcrumb',
+    meta.length === 1 && meta[0].includes('proj') && meta[0].includes('设计'), meta)
+  collect(n => n.type === 'button' && textOf(n) === '全量搜索')[0].props.onClick()
+  await flush(); paint()
+  check('switching mode re-runs the current keyword in full mode',
+    searchCalls().length === 2 && searchCalls()[1].payload.q === 'proj' && searchCalls()[1].payload.mode === 'full',
+    searchCalls().map(c => c.payload))
+  // The modal re-rendered under the new mode; re-grab the input so the debounce
+  // closure sees the fresh searchMode (a live DOM event always comes from the
+  // current render, so a fresh capture mirrors real usage).
+  const input2 = collect(n => hasClass(n, 'vds-search-input'))[0]
+  input2.props.onChange({ target: { value: 'body' } })
+  advance(300); await flush(); paint()
+  check('full search surfaces sessions found only inside their conversation body',
+    hits().length === 1 && hits()[0] === '旧会话', hits())
+  const oldMeta = collect(n => hasClass(n, 'vds-search-meta')).find(n => textOf(n).includes('根目录'))
+  check('a root-level hit breadcrumb names the root',
+    !!oldMeta && textOf(oldMeta).includes('根目录'), oldMeta && textOf(oldMeta))
+  collect(n => hasClass(n, 'vds-search-result')).find(n => textOf(n).includes('旧会话')).props.onClick()
+  await flush(); paint()
+  check('clicking a hit opens that session and dismisses the modal',
+    openSessionCalls.length === 1 && openSessionCalls[0] === 's-old'
+      && collect(n => hasClass(n, 'vds-search-overlay')).length === 0,
+    openSessionCalls)
+
+  // ---- 10. session drag reorder: same-container before/after ---------------
+  const rows = () => collect(n => hasClass(n, 'vds-sess-drop'))
+  const reorderCalls = () => rpcCalls.filter(c => c.method === 'vdirs-reorder-session')
+  check('session rows render draggable inside their container',
+    rows().length === 2 && rows().every(r => r.props.draggable === true), rows().length)
+  const stub = (clientY) => ({
+    preventDefault() {}, stopPropagation() {},
+    dataTransfer: { setData() {}, effectAllowed: '', dropEffect: '' },
+    currentTarget: { getBoundingClientRect: () => ({ top: 0, height: 40 }) },
+    clientY
+  })
+  const [rowA] = rows()
+  rowA.props.onDragStart(stub(0))
+  await flush(); paint()
+  // Re-capture the rows: a rendered element's handlers close over the render
+  // that produced it, and the drag state now lives in the fresh render — just as
+  // a live DOM event always belongs to the current render.
+  const [, rowB2] = rows()
+  rowB2.props.onDragOver(stub(10))
+  await flush(); paint()
+  check('hovering the top half of a sibling previews an insertion line above it',
+    rows().some(r => hasClass(r, 'vds-drop-before')), rows().map(r => r.props.className))
+  rows().find(r => hasClass(r, 'vds-drop-before')).props.onDrop(stub(10))
+  await flush(); paint()
+  check('dropping above a sibling reorders within the same container',
+    reorderCalls().length === 1 && reorderCalls()[0].payload.sessionId === 's-a'
+      && reorderCalls()[0].payload.dirId === 'd1' && reorderCalls()[0].payload.targetId === 's-b'
+      && reorderCalls()[0].payload.place === 'before',
+    reorderCalls().map(c => c.payload))
+  check('the reorder clears the drag state and indicator',
+    !collect(n => hasClass(n, 'vds-dragging')).length && !collect(n => hasClass(n, 'vds-drop-before')).length)
 
   console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed')
   process.exit(failures ? 1 : 0)
