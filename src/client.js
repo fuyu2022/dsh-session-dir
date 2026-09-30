@@ -112,7 +112,7 @@ window.__ModuleLoader__.load({
 .vds-blank .vds-sess-title{font-style:italic;}
 .vds-blank-note{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-secondary);flex-shrink:0;}
 .vds-dragging{opacity:.45;}
-.vds-menu{display:flex;flex-direction:column;gap:2px;margin:2px 0 2px 16px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:4px;background:var(--dsw-alias-bg-overlay);}
+.vds-menu{display:flex;flex-direction:column;gap:2px;margin:2px 0 2px 16px;border-radius:var(--dsw-radius-lg);padding:4px;background:var(--dsw-menu-surface-fill,var(--dsw-alias-bg-overlay));backdrop-filter:var(--dsw-menu-backdrop-filter);box-shadow:var(--dsw-elevation-prominent);}
 .vds-menu-item{padding:3px 8px;border-radius:4px;cursor:pointer;font-size:12px;color:var(--dsw-alias-label-primary);}
 .vds-menu-item:hover{background:rgba(127,127,127,.22);}
 .vds-menu-title{font-size:11px;color:var(--dsw-alias-label-secondary);padding:2px 8px;}
@@ -120,7 +120,7 @@ window.__ModuleLoader__.load({
 .vds-loading{color:var(--dsw-alias-label-secondary);font-size:12px;padding:8px;}
 .vds-more{align-self:center;margin:6px 0;}
 .vds-tiprow{position:relative;}
-.vds-tip{display:none;position:absolute;left:6px;top:100%;z-index:60;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--dsw-alias-label-primary);box-shadow:0 6px 18px rgba(0,0,0,.28);white-space:nowrap;pointer-events:none;flex-direction:column;gap:3px;max-width:340px;}
+.vds-tip{display:none;position:fixed;left:0;top:0;z-index:950;background:var(--dsw-menu-surface-fill,var(--dsw-alias-bg-overlay));backdrop-filter:var(--dsw-menu-backdrop-filter);border-radius:var(--dsw-radius-lg);padding:6px 10px;font-size:11px;color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-elevation-prominent);white-space:nowrap;pointer-events:none;flex-direction:column;gap:3px;max-width:340px;}
 .vds-tip-on{display:flex;}
 .vds-tip-k{color:var(--dsw-alias-label-secondary);}
 .vds-tip-id{display:inline-block;max-width:260px;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom;white-space:nowrap;}
@@ -418,6 +418,10 @@ window.__ModuleLoader__.load({
       const [error, setError] = useState(null)
       const [tipFor, setTipFor] = useState(null)
       const tipTimer = useRef(null)
+      // Floating tip: last pointer position (viewport coords) and the live tip
+      // element, so the card can follow the cursor without re-rendering.
+      const tipPosRef = useRef(null)
+      const tipActRef = useRef(null)
       const clearTimer = useRef(null)
       const prevClaim = useRef(null)
       const [searchOpen, setSearchOpen] = useState(false)
@@ -453,6 +457,15 @@ window.__ModuleLoader__.load({
           clearTimer.current = svc.timeout(() => { clearTimer.current = null; setDropTgt(null) }, 400)
         } catch (e) { setDropTgt(null) }
       }
+      // Anchor the floating card's top-left at the pointer, kept on-screen.
+      const placeTip = (el, x, y) => {
+        const w = el.offsetWidth || 0
+        const h = el.offsetHeight || 0
+        const vw = window.innerWidth
+        const vh = window.innerHeight
+        el.style.left = Math.max(4, Math.min(x, vw - w - 8)) + 'px'
+        el.style.top = Math.max(4, Math.min(y, vh - h - 8)) + 'px'
+      }
       const startTip = (sessionId) => {
         if (drag) return
         cancelTipTimer()
@@ -467,6 +480,34 @@ window.__ModuleLoader__.load({
         setTipFor(prev => prev === sessionId ? null : prev)
       }
       useEffect(() => () => { cancelTipTimer(); cancelClear(); cancelSearchTimer() }, [])
+
+      // Clicking outside every open menu and trigger closes the hand-rolled
+      // session ⋯ menus (the native prim.Menu closes by itself). The capture
+      // pass runs before React click handlers, so rows/headers stay clickable.
+      const viewsRef = useRef(views)
+      viewsRef.current = views
+      useEffect(() => {
+        const onDocPointerDown = (e) => {
+          if (!(e.target instanceof Node) || !e.target.closest) return
+          if (e.target.closest('.vds-menu') || e.target.closest('.vds-acts') || e.target.closest('.vds-mini.vds-more')) return
+          const now = viewsRef.current
+          let any = false
+          for (const k in now) { if (now[k].menu || now[k].wsMenu) { any = true; break } }
+          if (!any) return
+          setViews(prev => {
+            let changed = false
+            const next = {}
+            for (const k in prev) {
+              const vv = prev[k]
+              if (vv.menu || vv.wsMenu) { next[k] = Object.assign({}, vv, { menu: null, wsMenu: false }); changed = true }
+              else next[k] = vv
+            }
+            return changed ? next : prev
+          })
+        }
+        document.addEventListener('pointerdown', onDocPointerDown, true)
+        return () => document.removeEventListener('pointerdown', onDocPointerDown, true)
+      }, [])
 
       const updView = (wsId, upd) => setViews(prev => {
         const v = prev[wsId] || { tree: null, open: {}, pages: {}, menu: null, sel: null, wsMenu: false }
@@ -818,8 +859,9 @@ window.__ModuleLoader__.load({
             // every draggable session row (no CSS rule binds to it).
             out.push(
               h('div', { key: it.sessionId, className: 'vds-row vds-tiprow vds-sess-drop' + (isDragging ? ' vds-dragging' : '') + (sessTgt ? (sessTgt.place === 'after' ? ' vds-drop-after' : ' vds-drop-before') : ''), style: { paddingLeft: 4 }, draggable: true, onClick: () => openSession(it.sessionId),
-                onMouseEnter: () => startTip(it.sessionId),
+                onMouseEnter: (ev) => { if (ev.target && ev.target.closest && ev.target.closest('.vds-acts')) return; tipPosRef.current = { x: ev.clientX, y: ev.clientY }; startTip(it.sessionId) },
                 onMouseLeave: () => clearTip(it.sessionId),
+                onMouseMove: (ev) => { tipPosRef.current = { x: ev.clientX, y: ev.clientY }; if (tipFor === it.sessionId && tipActRef.current) placeTip(tipActRef.current, ev.clientX, ev.clientY) },
                 onDragStart: e => { const desc = { type: 'session', sessionId: it.sessionId, wsId: w.id, container: dirKey }; setDrag(desc); dragRef.current = desc; try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(it.sessionId)) } catch (errMsg) {} },
                 onDragEnd: endDrag,
                 onDragOver: e => sessOver(e, it, dirKey),
@@ -827,10 +869,10 @@ window.__ModuleLoader__.load({
                 onDrop: e => sessDrop(e, it, dirKey) },
                 h('span', { className: running.has(it.sessionId) ? 'vds-dot' : 'vds-dot-off' }),
                 h('span', { className: 'vds-sess-title' }, it.title || it.sessionId),
-                h('span', { className: 'vds-acts', onClick: e => e.stopPropagation() },
+                h('span', { className: 'vds-acts', onClick: e => e.stopPropagation(), onMouseEnter: () => clearTip(it.sessionId) },
                   h('button', { className: 'vds-mini', title: '操作', onClick: () => updView(w.id, vv => ({ menu: vv.menu === it.sessionId ? null : it.sessionId })) }, '⋯')
                 ),
-                h('div', { className: 'vds-tip' + (tipShow ? ' vds-tip-on' : '') },
+                h('div', { className: 'vds-tip' + (tipShow ? ' vds-tip-on' : ''), ref: tipShow ? (el) => { if (el) { tipActRef.current = el; const p = tipPosRef.current || { x: 0, y: 0 }; placeTip(el, p.x, p.y) } } : null },
                   h('div', null, h('span', { className: 'vds-tip-k' }, '会话 ID：'), h('span', { className: 'vds-tip-id', title: it.sessionId }, String(it.sessionId))),
                   h('div', null, h('span', { className: 'vds-tip-k' }, '最后活跃：'), fmtFull(it.lastActiveAt)),
                   h('div', null, h('span', { className: 'vds-tip-k' }, '创建于：'), fmtFull(it.createdAt))
