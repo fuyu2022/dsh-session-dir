@@ -13,6 +13,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-session-dir',
   factory(require) {
     const React = require('react');
+    const prim = require('@deepseek-ai/dsh-client-ui-primitives');
 
     // One idempotent <style data-plugin-css> tag, following the client-modules
     // convention so theme scoping stays consistent.
@@ -74,11 +75,12 @@ window.__ModuleLoader__.load({
 .vds-sec[draggable=true]:active{cursor:grabbing;}
 .vds-sec-head{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;color:var(--dsw-alias-label-primary);}
 .vds-sec-head:hover{background:rgba(127,127,127,.12);}
-.vds-sec-head-open{background:rgba(127,127,127,.08);}
+.vds-sec-head:active{background:rgba(127,127,127,.18);}
 .vds-wsname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1;}
 .vds-count{font-size:11px;color:var(--dsw-alias-label-secondary);flex-shrink:0;}
 .vds-mini{background:none;border:none;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:12px;padding:1px 4px;border-radius:4px;flex-shrink:0;}
 .vds-mini:hover{background:rgba(127,127,127,.22);color:var(--dsw-alias-label-primary);}
+.vds-more{font-weight:600;letter-spacing:1px;}
 .vds-folder{display:flex;align-items:center;flex-shrink:0;color:var(--dsw-alias-label-secondary);}
 .vds-sec-head-open .vds-folder{color:var(--dsw-alias-brand-primary);}
 .vds-dir-glyph{display:flex;align-items:center;flex-shrink:0;color:var(--dsw-alias-brand-primary);}
@@ -96,6 +98,7 @@ window.__ModuleLoader__.load({
 .vds-rootzone.vds-drop-into{padding:2px;}
 .vds-rootslot{border:1px dashed var(--dsw-alias-border-l2);border-radius:6px;margin:2px 4px;padding:10px 8px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:11px;}
 .vds-row{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;cursor:default;color:var(--dsw-alias-label-primary);}
+.vds-row.vds-dir-drop{cursor:pointer;}
 .vds-row:hover{background:rgba(127,127,127,.13);}
 .vds-row-active{background:rgba(96,150,255,.20);}
 .vds-sess-title,.vds-dir-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
@@ -314,23 +317,15 @@ window.__ModuleLoader__.load({
     }
 
     // ---------------- icons ----------------
-    // Plain plus: "create a session".
-    function PlusIcon(props) {
+    // The shipped sidebar's own new-session glyph, drawn from the native
+    // NewChatOutline artwork (16x16 viewBox, stroke 1.3) so 新建会话 uses a
+    // real product icon instead of a hand-drawn plus.
+    function NewChatIcon(props) {
       const s = props.size ?? 14
-      return h('svg', { width: s, height: s, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' },
-        h('path', { d: 'M12 5.5v13' }),
-        h('path', { d: 'M5.5 12h13' })
-      )
-    }
-
-    // Folder outline with an inner plus: "create a virtual directory", kept
-    // visually distinct from PlusIcon so the two are never confused.
-    function FolderPlusIcon(props) {
-      const s = props.size ?? 14
-      return h('svg', { width: s, height: s, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round' },
-        h('path', { d: 'M3.5 7A1.5 1.5 0 0 1 5 5.5h4.2l1.8 2H19A1.5 1.5 0 0 1 20.5 9v8A1.5 1.5 0 0 1 19 18.5H5A1.5 1.5 0 0 1 3.5 17z' }),
-        h('path', { d: 'M12 8.8v6.4' }),
-        h('path', { d: 'M8.8 12h6.4' })
+      return h('svg', { width: s, height: s, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', strokeWidth: 1.3 },
+        h('path', { d: 'M2.37091 11.2501C1.58745 9.89288 1.32067 8.29835 1.61969 6.76006C1.91872 5.22177 2.76342 3.8433 3.99826 2.87846C5.2331 1.91362 6.77494 1.42737 8.33988 1.50925C9.90482 1.59113 11.3875 2.23562 12.5149 3.32406C13.6425 4.41269 14.3387 5.87206 14.4754 7.4334C14.612 8.99474 14.18 10.5529 13.2587 11.8209C12.3375 13.0888 10.9891 13.9813 9.46194 14.3337C8.18691 14.628 6.85895 14.5294 5.64989 14.0605C5.1712 13.8748 4.76962 13.4932 4.26534 13.3967C3.67413 13.2835 2.95257 13.5598 2.03794 14.3337', stroke: 'currentColor' }),
+        h('path', { d: 'M8 5V11', stroke: 'currentColor' }),
+        h('path', { d: 'M5 8H11', stroke: 'currentColor' })
       )
     }
 
@@ -399,7 +394,6 @@ window.__ModuleLoader__.load({
     // ---------------- workspace tree ----------------
     const EMPTY_PAGE = { items: [], total: 0, hasMore: false, loading: false, offset: 0 }
     const KEEP_KEYS = new Set(['root'])
-    const EXPAND_LIMIT = 300
     const TIP_DELAY = 500
 
     function BrowserWide(props) {
@@ -416,6 +410,10 @@ window.__ModuleLoader__.load({
       const [sessionRenaming, setSessionRenaming] = useState(null)
       const [sessionName, setSessionName] = useState('')
       const [drag, setDrag] = useState(null)
+      // Synchronous mirror of `drag` for drag-drop handlers: set in the same
+      // tick as dragstart so dragover/drop never see a stale null (and the
+      // native dataTransfer payload is written defensively afterwards).
+      const dragRef = useRef(null)
       const [dropTgt, setDropTgt] = useState(null)
       const [error, setError] = useState(null)
       const [tipFor, setTipFor] = useState(null)
@@ -471,11 +469,11 @@ window.__ModuleLoader__.load({
       useEffect(() => () => { cancelTipTimer(); cancelClear(); cancelSearchTimer() }, [])
 
       const updView = (wsId, upd) => setViews(prev => {
-        const v = prev[wsId] || { tree: null, open: {}, pages: {}, menu: null, sel: null }
+        const v = prev[wsId] || { tree: null, open: {}, pages: {}, menu: null, sel: null, wsMenu: false }
         const patch = typeof upd === 'function' ? upd(v) : upd
         return Object.assign({}, prev, { [wsId]: Object.assign({}, v, patch) })
       })
-      const view = (wsId) => views[wsId] || { tree: null, open: {}, pages: {}, menu: null, sel: null }
+      const view = (wsId) => views[wsId] || { tree: null, open: {}, pages: {}, menu: null, sel: null, wsMenu: false }
       const uiWs = () => ctx.get('uiWorkspace')
       const wsSvc = () => ctx.get('workspaces')
 
@@ -541,6 +539,7 @@ window.__ModuleLoader__.load({
       }
 
       const toggleWs = (wsId) => {
+        if (view(wsId).wsMenu) updView(wsId, { wsMenu: false })
         if (openWs[wsId]) closeWorkspace(wsId)
         else openWorkspace(wsId)
       }
@@ -627,21 +626,7 @@ window.__ModuleLoader__.load({
         }).catch(e => setError('重命名失败: ' + String((e && e.message) || e)))
       }
 
-      const expandAll = (wsId) => {
-        const tree = view(wsId).tree
-        if (!tree) return
-        const open = {}
-        tree.dirs.forEach(d => { if (d.count <= EXPAND_LIMIT) open[d.id] = true })
-        updView(wsId, { open })
-        const keys = ['root'].concat(tree.dirs.filter(d => d.count <= EXPAND_LIMIT).map(d => d.id))
-        keys.forEach(k => loadPage(wsId, k, 'reset'))
-      }
-
-      const collapseAll = (wsId) => {
-        updView(wsId, { open: {}, menu: null })
-      }
-
-      const endDrag = () => { cancelClear(); setDrag(null); setDropTgt(null) }
+      const endDrag = () => { cancelClear(); dragRef.current = null; setDrag(null); setDropTgt(null) }
 
       const addWorkspace = () => {
         const svc = uiWs()
@@ -835,7 +820,7 @@ window.__ModuleLoader__.load({
               h('div', { key: it.sessionId, className: 'vds-row vds-tiprow vds-sess-drop' + (isDragging ? ' vds-dragging' : '') + (sessTgt ? (sessTgt.place === 'after' ? ' vds-drop-after' : ' vds-drop-before') : ''), style: { paddingLeft: 4 }, draggable: true, onClick: () => openSession(it.sessionId),
                 onMouseEnter: () => startTip(it.sessionId),
                 onMouseLeave: () => clearTip(it.sessionId),
-                onDragStart: e => { e.dataTransfer.setData('text/plain', it.sessionId); e.dataTransfer.effectAllowed = 'move'; setDrag({ type: 'session', sessionId: it.sessionId, wsId: w.id, container: dirKey }) },
+                onDragStart: e => { const desc = { type: 'session', sessionId: it.sessionId, wsId: w.id, container: dirKey }; setDrag(desc); dragRef.current = desc; try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(it.sessionId)) } catch (errMsg) {} },
                 onDragEnd: endDrag,
                 onDragOver: e => sessOver(e, it, dirKey),
                 onDragLeave: () => { if (drag && drag.type === 'session') scheduleClear() },
@@ -946,7 +931,7 @@ window.__ModuleLoader__.load({
             groupKids.push(
               h('div', { key: d.id + '-head', className: 'vds-row vds-dir-drop' + (active ? ' vds-row-active' : '') + (isDraggingDir ? ' vds-dragging' : '') + dropCls, 'data-dir-id': d.id, style: { paddingLeft: 4 }, draggable: true, title: '拖拽排序；拖入会话可放入此目录',
                 onClick: () => { updView(w.id, { sel: d.id }); toggleDir(w.id, d.id) },
-                onDragStart: e => { e.dataTransfer.setData('text/plain', d.id); e.dataTransfer.effectAllowed = 'move'; setDrag({ type: 'dir', dirId: d.id, parentId: d.parentId || null, wsId: w.id }) },
+                onDragStart: e => { const desc = { type: 'dir', dirId: d.id, parentId: d.parentId || null, wsId: w.id }; setDrag(desc); dragRef.current = desc; try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(d.id)) } catch (errMsg) {} },
                 onDragEnd: endDrag,
                 onDragOver: e => {
                   if (!drag || drag.wsId !== w.id) return
@@ -981,8 +966,8 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'vds-dir-name' }, d.name),
                 h('span', { className: 'vds-count' }, String(d.count)),
                 h('span', { className: 'vds-acts', onClick: e => e.stopPropagation() },
-                  h('button', { className: 'vds-act', title: '新建会话', onClick: () => { openDir(w.id, d.id); startSessionIn(w.id, w.path, d.id) } }, h(PlusIcon, { size: 12 })),
-                  h('button', { className: 'vds-act', title: '新建子目录', onClick: () => { setDirName(''); setCreating({ wsId: w.id, parent: d.id }); setRenaming(null); setDeleting(null) } }, h(FolderPlusIcon, { size: 12 })),
+                  h('button', { className: 'vds-act', title: '新建会话', onClick: () => { openDir(w.id, d.id); startSessionIn(w.id, w.path, d.id) } }, h(NewChatIcon, { size: 12 })),
+                  h('button', { className: 'vds-act', title: '新建虚拟目录', onClick: () => { setDirName(''); setCreating({ wsId: w.id, parent: d.id }); setRenaming(null); setDeleting(null) } }, h(VirtualDirIcon, { size: 12 })),
                   h('button', { className: 'vds-act', title: '重命名', onClick: () => { setDirName(d.name); setRenaming({ wsId: w.id, dirId: d.id }); setCreating(null); setDeleting(null) } }, '✎'),
                   h('button', { className: 'vds-act', title: '删除', onClick: () => { setDeleting({ wsId: w.id, dirId: d.id }); setRenaming(null); setCreating(null) } }, '✕')
                 )
@@ -1104,7 +1089,7 @@ window.__ModuleLoader__.load({
           // workspace drag and "move into directory" would stop working. A
           // workspace drag starts only from the section element itself (header
           // or blank area), which is what the draggable attribute is for.
-          onDragStart: e => { if (e.target !== e.currentTarget) return; e.dataTransfer.setData('text/plain', w.id); e.dataTransfer.effectAllowed = 'move'; setDrag({ type: 'ws', wsId: w.id }) },
+          onDragStart: e => { if (e.target !== e.currentTarget) return; const desc = { type: 'ws', wsId: w.id }; setDrag(desc); dragRef.current = desc; try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(w.id)) } catch (errMsg) {} },
           onDragEnd: endDrag,
           onDragOver: e => wsOver(e, w),
           onDragLeave: () => scheduleClear(),
@@ -1115,12 +1100,9 @@ window.__ModuleLoader__.load({
             h('span', { className: 'vds-chev' + (isOpen ? ' vds-chev-open' : '') }, h(ChevronIcon, { size: 12 })),
             h('span', { className: 'vds-wsname', title: w.path }, w.title),
             h('span', { className: 'vds-count' }, ttl),
-            h('span', { className: 'vds-mini', title: '展开全部目录', onClick: e => { e.stopPropagation(); expandAll(w.id) } }, '⤵'),
-            h('span', { className: 'vds-mini', title: '折叠全部目录', onClick: e => { e.stopPropagation(); collapseAll(w.id) } }, '⤴'),
-            h('span', { className: 'vds-mini', title: '新建会话', onClick: e => { e.stopPropagation(); startSessionIn(w.id, w.path, null) } }, h(PlusIcon, { size: 14 })),
-            h('span', { className: 'vds-mini', title: '新建根目录', onClick: e => { e.stopPropagation(); setDirName(''); setCreating({ wsId: w.id, parent: 'root' }); setRenaming(null); setDeleting(null) } }, h(FolderPlusIcon, { size: 14 })),
-            h('span', { className: 'vds-mini', title: '重命名工作区', onClick: e => { e.stopPropagation(); setWsName(w.title); setWsRenaming(w.id); setWsDeleting(null) } }, '✎'),
-            h('span', { className: 'vds-mini', title: '删除工作区', onClick: e => { e.stopPropagation(); setWsDeleting(w.id); setWsRenaming(null) } }, '✕')
+            h('span', { className: 'vds-mini', title: '新建会话', onClick: e => { e.stopPropagation(); startSessionIn(w.id, w.path, null) } }, h(NewChatIcon, { size: 14 })),
+            h('span', { className: 'vds-mini', title: '新建虚拟目录', onClick: e => { e.stopPropagation(); setDirName(''); setCreating({ wsId: w.id, parent: 'root' }); setRenaming(null); setDeleting(null) } }, h(VirtualDirIcon, { size: 14 })),
+            h(prim.Menu, { open: !!view(w.id).wsMenu, onClose: () => updView(w.id, { wsMenu: false }), items: [ {id:'rename', label:'重命名工作区', icon: h(prim.IconEditOutlineRegular,{size:14})}, {type:'separator', id:'ws-sep'}, {id:'delete', label:'删除工作区', danger:true, icon: h(prim.IconTrashOutlineRegular,{size:14})} ], onSelect: (id)=>{ updView(w.id,{wsMenu:false}); if(id==='rename'){setWsName(w.title);setWsRenaming(w.id);setWsDeleting(null)} else if(id==='delete'){setWsDeleting(w.id);setWsRenaming(null)} }, align:'end', portal:true, anchor: h('button',{type:'button',className:'vds-mini vds-more',title:'操作','aria-label':'操作',onClick:e=>{e.stopPropagation();updView(w.id,{wsMenu:true})}},'⋯') })
           ),
           wsRenaming === w.id ? h('div', { className: 'vds-row' },
             h('input', { className: 'vds-input', value: wsName, autoFocus: true, onChange: e => setWsName(e.target.value), onKeyDown: e => { if (e.key === 'Enter') renameWorkspace(w.id); if (e.key === 'Escape') { setWsRenaming(null); setWsName('') } } }),
@@ -1182,7 +1164,13 @@ window.__ModuleLoader__.load({
       )
 
       return [
-        h('div', { key: 'vds-side', className: 'vds-side' },
+        h('div', { key: 'vds-side', className: 'vds-side',
+          // Container-level DnD guard: while an in-app drag is active, accept
+          // the drop anywhere inside the sidebar so the browser never shows the
+          // forbidden cursor; the row handlers still decide the exact drop.
+          onDragOver: e => { if (dragRef.current) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move' } },
+          onDrop: e => { if (dragRef.current) e.preventDefault() }
+        },
           h('div', { className: 'vds-side-head' },
             h('span', { className: 'vds-title' }, '会话'),
             h('span', { className: 'vds-spacer' }),
