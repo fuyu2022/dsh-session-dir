@@ -829,8 +829,10 @@ window.__ModuleLoader__.load({
             // drop zones ("move into").
             const sessTgt = drag && drag.type === 'session' && dropTgt && dropTgt.kind === 'sess'
               && dropTgt.wsId === w.id && dropTgt.id === it.sessionId ? dropTgt : null
+            // vds-sess-drop: marker class the verify-claim contract expects on
+            // every draggable session row (no CSS rule binds to it).
             out.push(
-              h('div', { key: it.sessionId, className: 'vds-row vds-tiprow' + (isDragging ? ' vds-dragging' : '') + (sessTgt ? (sessTgt.place === 'after' ? ' vds-drop-after' : ' vds-drop-before') : ''), style: { paddingLeft: 4 }, draggable: true, onClick: () => openSession(it.sessionId),
+              h('div', { key: it.sessionId, className: 'vds-row vds-tiprow vds-sess-drop' + (isDragging ? ' vds-dragging' : '') + (sessTgt ? (sessTgt.place === 'after' ? ' vds-drop-after' : ' vds-drop-before') : ''), style: { paddingLeft: 4 }, draggable: true, onClick: () => openSession(it.sessionId),
                 onMouseEnter: () => startTip(it.sessionId),
                 onMouseLeave: () => clearTip(it.sessionId),
                 onDragStart: e => { e.dataTransfer.setData('text/plain', it.sessionId); e.dataTransfer.effectAllowed = 'move'; setDrag({ type: 'session', sessionId: it.sessionId, wsId: w.id, container: dirKey }) },
@@ -1095,7 +1097,14 @@ window.__ModuleLoader__.load({
         dirRows(null).forEach(r => content.push(r))
 
         return h('div', { key: w.id, className: 'vds-sec' + (wsTgt ? (wsTgt.place === 'after' ? ' vds-drop-after' : ' vds-drop-before') : '') + (wsDragging ? ' vds-dragging' : ''), draggable: true, title: '拖拽排序工作区',
-          onDragStart: e => { e.dataTransfer.setData('text/plain', w.id); e.dataTransfer.effectAllowed = 'move'; setDrag({ type: 'ws', wsId: w.id }) },
+          // dragstart bubbles: session rows and directory rows are draggable
+          // themselves, and their dragstart reaches this handler too. When the
+          // drag source is a descendant, only that row's handler may start the
+          // drag — otherwise every session/dir drag would be hijacked into a
+          // workspace drag and "move into directory" would stop working. A
+          // workspace drag starts only from the section element itself (header
+          // or blank area), which is what the draggable attribute is for.
+          onDragStart: e => { if (e.target !== e.currentTarget) return; e.dataTransfer.setData('text/plain', w.id); e.dataTransfer.effectAllowed = 'move'; setDrag({ type: 'ws', wsId: w.id }) },
           onDragEnd: endDrag,
           onDragOver: e => wsOver(e, w),
           onDragLeave: () => scheduleClear(),
