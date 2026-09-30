@@ -1113,7 +1113,7 @@ window.__ModuleLoader__.load({
           const rootClaim = !!(claim && claim.wsId === w.id && !claim.dirId)
           const zoneKids = [h('div', { key: 'rootlbl', className: 'vds-rootlbl' }, '根目录 · ' + tree.rootCount)]
           if (tree.rootCount > 0 || rootClaim) zoneKids.push(leafRows('root', false))
-          else zoneKids.push(h('div', { key: 'rootslot', className: 'vds-rootslot' }, tree.total === 0 && !tree.dirs.length ? '暂无会话，点标题栏 ＋ 新建' : '拖入会话以移出目录'))
+          else zoneKids.push(h('div', { key: 'rootslot', className: 'vds-rootslot' }, tree.total === 0 && !tree.dirs.length ? '暂无会话' : '拖入会话以移出目录'))
           content.push(h('div', { key: 'rootzone', className: 'vds-rootzone' + (rootInto ? ' vds-drop-into' : ''),
             onDragOver: rootOver,
             onDragLeave: () => scheduleClear(),
